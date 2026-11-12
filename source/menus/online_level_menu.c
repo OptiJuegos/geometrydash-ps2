@@ -9,7 +9,7 @@
 #include "menus/components/ui_button.h"
 #include "menus/components/ui_rectangle.h"
 #include "main.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "utils/folders.h"
 #include "menus/external_level_infobox.h"
@@ -72,8 +72,13 @@ void online_menu_loop() {
     in_refresh = false;
     in_info_box = false;
 
+#ifdef __PS2__
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_menu_ps2.txt");
+    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_menu_top_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_menu.txt");
     ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_menu_top.txt");
+#endif
 
     bg_gradient = (UIImage *) ui_get_element_by_tag(&default_screen, "gradient");
     bg_gradient_top = (UIImage *) ui_get_element_by_tag(&default_screen_top, "gradient_top");
@@ -120,6 +125,11 @@ void online_menu_loop() {
                 draw_fade();
 
                 begin_eye_layer(DEPTH_UI);
+#ifdef __PS2__
+                // Popup overlays share the PS2 display: don't paint the
+                // level metadata on top of a popup drawn by the bottom tree.
+                if (!in_info_box && !in_comments && !in_delete && !in_refresh)
+#endif
                 ui_screen_draw(&default_screen_top);
                 end_eye_layer();
 

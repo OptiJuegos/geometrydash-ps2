@@ -6,7 +6,14 @@
 #define FADING_OBJ_PADDING 45
 #define FADING_OBJ_WIDTH 180
 
+#ifdef __PSP__
+// the objects' fade in and out at the sides: 75 took a seventh of the screen
+// on each side, the level seemed to appear right next to the player; 30 was
+// one block but the fade went by too quickly, 35 is in between
+#define FADE_WIDTH 35
+#else
 #define FADE_WIDTH 75
+#endif
 
 #define BACKGROUND_SCALE 0.9f
 
@@ -110,6 +117,7 @@ extern const Color white;
 extern float object_creating_time;
 extern float object_sorting_time;
 extern float object_drawing_time;
+extern float player_graphics_time;
 
 inline float normalize_angle(float a)
 {
@@ -130,6 +138,31 @@ void draw_background(float x, float y);
 void draw_ground(float cam_x, float cam_y, float y, bool is_ceiling, int screen_width);
 void update_player_colors();
 void set_player_colors(Color p1, Color p2, Color glow);
+#if defined(__PSP__) || defined(__PS2__)
+void v2_sheet_need(bool need);
+// the animated 2.0 objects' clock, while the level runs
+void obj_anim_tick(float dt);
+// the robot's animations (wiidash's, from GD's robot.plist): running, then
+// a jump's start and its loop, a fall's start and its loop
+enum { ROBOT_ANIM_RUN, ROBOT_ANIM_JUMP_START, ROBOT_ANIM_JUMP, ROBOT_ANIM_FALL_START, ROBOT_ANIM_FALL };
+// draws the robot's parts posed for *anim at t seconds (a start that ended
+// moves *anim on to its loop)
+void spawn_robot_at(float x, float y, float deg, unsigned char flip_x, unsigned char flip_y,
+                    float scale, u32 p1_color, u32 p2_color, u8 *anim, float t);
+// the same, robot number id (1 to ROBOT_COUNT; the icon kit's) instead of the
+// selected one
+void spawn_robot_id_at(int id, float x, float y, float deg, unsigned char flip_x, unsigned char flip_y,
+                       float scale, u32 p1_color, u32 p2_color, u8 *anim, float t);
+// the icon kit's robots (robots.psheet: the levels with the robot and the icon
+// kit load it)
+void robots_sheet_need(bool need);
+// GD's text objects: their text comes with the level (level_loading.c), they
+// are drawn over the level's other objects
+#define TEXT_OBJECT 914
+void text_objects_clear(void);
+void text_object_add(int obj, const char *b64, float scale_x, float scale_y);
+void draw_text_objects(void);
+#endif
 void spawn_icon_at(
     int gamemode,
     int id,

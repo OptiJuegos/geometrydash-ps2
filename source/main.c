@@ -17,13 +17,17 @@
 #include "main.h"
 #include "graphics.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "level/main_levels.h"
 #include "fonts/bigFont.h"
 
 #include "save/config.h"
 
+/* The offline PS2 target does not compile source/utils/network.c and this
+ * translation unit does not call the curl API. Keep the PSP/3DS include. */
+#ifndef __PS2__
 #include <curl/curl.h>
+#endif
 
 #include "menus/main_menu.h"
 #include "menus/level_select.h"
@@ -43,6 +47,20 @@
 
 #ifdef __PSP__
 #include "../psp/src/psp_port.h"
+#endif
+#include "triggers_v2.h"
+
+#ifdef __PS2__
+#include "../ps2/src/boot_trace.h"
+#include "../ps2/src/romfs_paths.h"
+u32 PS2_PresentVcount(void);
+#include "../ps2/src/ps2_jump_entry.h"
+#include "../ps2/src/ps2_aspect.h"
+#include "../ps2/src/startup_ps2.h"
+#include <kernel.h>
+#define GDPS2_BOOT(number, name) PS2_BootStage((number), (name))
+#else
+#define GDPS2_BOOT(number, name) ((void)0)
 #endif
 
 #include "player/player.h"
@@ -175,6 +193,7 @@ void no_dsp_firmware(void) {
     exit(22);
 }
 
+#ifndef __PS2__
 static FILE *log_file = NULL;
 
 static void ensure_log_file(void) {
@@ -182,15 +201,27 @@ static void ensure_log_file(void) {
     
     log_file = fopen(CONFIG_ROOT "output.txt", "w");
 }
+#endif
 
 static void close_log_file(void) {
+#ifndef __PS2__
     if (log_file) {
         fclose(log_file);
         log_file = NULL;
     }
+#endif
 }
 
 int output_log(const char *fmt, ...) {
+#ifdef __PS2__
+    /* Logs to EE stdout only. Debug output on a Memory Card is slow,
+     * causes stutter in menus and can wear flash for no save-data benefit. */
+    va_list args;
+    va_start(args, fmt);
+    int ret = vprintf(fmt, args);
+    va_end(args);
+    return ret;
+#else
     ensure_log_file();
 
     if (!log_file) return 0; // failed to open log
@@ -215,6 +246,7 @@ int output_log(const char *fmt, ...) {
     va_end(args1);
 
     return ret;
+#endif
 }
 
 #define MAX_AUDIO_DB 9
@@ -255,6 +287,10 @@ float particle_calc_time = 0;
 float triggers_time = 0;
 
 float delta = 0;
+#ifdef __PSP__
+bool psp_autoload_test; // started from an autoload.gmd (logs what it draws)
+float psp_teleport_watch; // autoload test: seconds left of logging the player after a teleport
+#endif
 unsigned int level_frame = 0;
 unsigned int frame_counter = 0;
 
@@ -566,7 +602,12 @@ void game_loop() {
     C2D_Fade(0);
     for (int eye = 0; begin_top_eye(eye); eye++) {
         begin_eye_layer(DEPTH_UI);
-#ifdef __PSP__
+#ifdef __PS2__
+        /* Right-aligned loading caption must stay inside the 320x240 crop. */
+        draw_text(&bigFont_fontCharset, &bigFont_sheet,
+                  GDPS2_CROP_X + GDPS2_VISIBLE_W - 12, SCREEN_HEIGHT - 10,
+                  0.5f, 0.5f, 1.0f, true, "Loading...");
+#elif defined(__PSP__)
         // the PSP cuts 8 lines off the top screen's bottom (480x272)
         draw_text(&bigFont_fontCharset, &bigFont_sheet, SCREEN_WIDTH - 14, SCREEN_HEIGHT - 22, 0.5f, 0.5f, 1.0f, true, "Loading...");
 #else
@@ -583,6 +624,10 @@ void game_loop() {
     } else {
         path = main_levels[curr_level_id].gmd_path;
     }
+#ifdef __PS2__
+    printf("GDPS2 LEVEL: selected_index=%d custom=%d path=%s\n",
+           curr_level_id, state.custom_level, path ? path : "(null)");
+#endif
 
     update_player_colors();
 
@@ -601,13 +646,21 @@ void game_loop() {
 
     play_level_song(level_info.song_offset);
 
-    if (song_loaded) pause_playback_mp3();
+    if (song_loaded) pause_playback_music();
 
     set_fade_status(FADE_STATUS_IN);
 
     bool being_faded = true;
 
     first_load_init_variables();
+
+#ifdef PS2_DIAG_NOCLIP_LEVEL
+    /* Only a separate instrumentation ELF: traverse long levels without
+     * periodic death/reload stalls masquerading as mid-level frame spikes.
+     * NEVER enabled in the release build or normal player controls. */
+    state.noclip = true;
+    puts("GDPS2 FT: diagnostic noclip ON (release unaffected)");
+#endif
 
     init_op_system();
 
@@ -621,14 +674,45 @@ void game_loop() {
     exiting_level = false;
     fixed_dt = true;
 
+    /* PS2: sample the pad again after loading. CROSS can confirm the menu
+     * and jump, so suppress only that inherited CROSS, if it remains held.
+     * Do not arm the gate for UP/analog movement; an unrelated held input
+     * must never prevent later CROSS presses from jumping. */
+#ifdef __PS2__
+    hidScanInput();
+    const u32 ps2_inherited_menu_jump_mask =
+        GDPS2_MenuConfirmJumpMask(jump_key_mask());
+    bool ps2_wait_for_jump_release = GDPS2_JumpEntryHeld(
+        hidKeysHeld(), ps2_inherited_menu_jump_mask);
+    sync_precise_input(ps2_wait_for_jump_release);
+#else
     sync_precise_input(false);
+#endif
     memset(pi_substep_presses, 0, sizeof(pi_substep_presses));
 #ifdef __PSP__
+    // which level, for a log that ends in a crash
+    psp_log("level: %s\n", level_info.level_name);
     psp_log_memory("level loaded");
 #endif
 
     u64 lastTime = svcGetSystemTick();
     u64 start = svcGetSystemTick();
+#ifdef PS2_DIAG_FRAME_TIMING
+    /* Per-120-frame windows, not printf every frame: logging itself would
+     * cause the frametime spikes we are trying to measure. */
+    unsigned profile_frames = 0, profile_over20 = 0, profile_over33 = 0;
+    unsigned profile_max_steps = 0;
+    float profile_frame_sum = 0, profile_update_sum = 0, profile_draw_sum = 0;
+    float profile_frame_peak = 0, profile_update_peak = 0, profile_draw_peak = 0;
+    /* update split: sum and peak of physics, collision, triggers, objects, particles */
+    float prof_sec_sum[7] = {0}, prof_sec_peak[7] = {0};
+    unsigned long prof_sprites_sum = 0;
+    unsigned prof_sprites_peak = 0;
+    float prof_objdraw_sum = 0, prof_objdraw_peak = 0;
+    float prof_player_sum = 0, prof_player_peak = 0;
+    /* triggers split: handle_triggers, trig2_update, obj_anim_tick, colors+lbg */
+    float prof_trg_sum[4] = {0}, prof_trg_peak[4] = {0}, prof_trg[4] = {0};
+#endif
     bool old_wide = settingsState.wideEnabled;
     bool old_stereo = settingsState.stereoEnabled;
 
@@ -703,6 +787,14 @@ void game_loop() {
         bool touch_pressed = in_bounds && (kDown & KEY_TOUCH);
         bool touch_held = in_bounds && (kHeld & KEY_TOUCH);
 
+#ifdef __PS2__
+        /* Block only a held menu press, never a fresh press after release. */
+        if (GDPS2_BlockInheritedJump(&ps2_wait_for_jump_release,
+                                     kHeld, ps2_inherited_menu_jump_mask)) {
+            buttonPressed = buttonHeld = touch_pressed = touch_held = false;
+        }
+#endif
+
         if (!pi_enabled) {
             state.old_input = state.input;
             state.input.pressedJump = (buttonPressed || touch_pressed) == true;
@@ -722,14 +814,18 @@ void game_loop() {
 
         u64 now = svcGetSystemTick();
         delta = (now - lastTime) / (CPU_TICKS_PER_MSEC * 1000);
-#ifdef __PSP__
+#if defined(__PSP__) || defined(__PS2__)
         // Frames go on screen on vblanks (59.94 Hz): the time between two of
         // them is a whole number of vblanks, exactly. Measured with the clock
         // it came a little early or late, and a frame ran 3 or 5 physics
         // steps instead of 4, which looked like stutter
         {
             static u32 last_vc;
+#ifdef __PS2__
+            u32 vc = PS2_PresentVcount();
+#else
             u32 vc = PSP_PresentVcount();
+#endif
             u32 k = vc - last_vc;
             if (last_vc && k >= 1 && k <= 15) delta = k / 59.94f;
             last_vc = vc;
@@ -781,6 +877,12 @@ void game_loop() {
                         state.old_input = state.input;
                         state.input.pressedJump = pi_pressed() == true;
                         state.input.holdJump = (pi_hold() || state.input.pressedJump) == true;
+#ifdef __PS2__
+                        if (ps2_wait_for_jump_release) {
+                            state.input.pressedJump = false;
+                            state.input.holdJump = false;
+                        }
+#endif
                         if (pi_pressed()){
                             pi_substep_presses[steps < PI_SUBSTEP_BUCKETS ? steps : PI_SUBSTEP_BUCKETS - 1]++;
                         }
@@ -825,11 +927,13 @@ void game_loop() {
                     u64 end_physics = svcGetSystemTick();
                     float physics_time = (end_physics - start_physics) / (CPU_TICKS_PER_MSEC);
 
-#ifdef __PSP__
-                    // One core: the music thread decoding in the middle of a
-                    // step made it look slow, and the next step then went
-                    // two or three times as far (a jerk). The accumulator
-                    // keeps up with real time already
+#if defined(__PSP__) || defined(__PS2__)
+                    /* PSP and PS2 have one EE/CPU running gameplay alongside
+                     * audio work. Enlarging STEPS_DT after a slow physics
+                     * iteration makes the next step jump forward and then
+                     * subtracts too much from the fixed-step accumulator.
+                     * Let that accumulator catch up instead, exactly as the
+                     * PSP build does; never stretch one collision step. */
                     frame_skipped = 0;
 #else
                     if (physics_time / 1000 >= STEPS_DT_UNMOD) {
@@ -913,11 +1017,11 @@ void game_loop() {
                         if (checkpoint_count > 0) {
                             restore_checkpoint();
                         } else {
-                            seek_mp3(level_info.song_offset);
+                            seek_music(level_info.song_offset);
                         }
                     }
 
-                    if (song_loaded) unpause_playback_mp3();
+                    if (song_loaded) unpause_playback_music();
                     sync_precise_input(false);
                     fixed_dt = true;
                     state.dead = false;
@@ -928,10 +1032,36 @@ void game_loop() {
             handle_practice_mode();
 
             u64 start_trig = svcGetSystemTick();
+#if defined(__PSP__) || defined(__PS2__)
+            // the channels' own colors back, before triggers change them
+            trig2_unpulse_channels();
+#endif
             handle_triggers();
+#ifdef PS2_DIAG_FRAME_TIMING
+            u64 t_trg1 = svcGetSystemTick();
+#endif
+#if defined(__PSP__) || defined(__PS2__)
+            trig2_update(delta); // moves, fades, spawns, pulses
+#ifdef PS2_DIAG_FRAME_TIMING
+            u64 t_trg2 = svcGetSystemTick();
+#endif
+            obj_anim_tick(delta); // fire, water, monsters (graphics.c)
+#endif
+#ifdef PS2_DIAG_FRAME_TIMING
+            u64 t_trg3 = svcGetSystemTick();
+#endif
             handle_col_triggers();
             calculate_lbg();
+#if defined(__PSP__) || defined(__PS2__)
+            trig2_pulse_channels(); // and the pulses over them, for this frame
+#endif
             u64 end_trig = svcGetSystemTick();
+#ifdef PS2_DIAG_FRAME_TIMING
+            prof_trg[0] = (t_trg1 - start_trig) / CPU_TICKS_PER_MSEC;
+            prof_trg[1] = (t_trg2 - t_trg1) / CPU_TICKS_PER_MSEC;
+            prof_trg[2] = (t_trg3 - t_trg2) / CPU_TICKS_PER_MSEC;
+            prof_trg[3] = (end_trig - t_trg3) / CPU_TICKS_PER_MSEC;
+#endif
             u64 ticks_trig = end_trig - start_trig;
             triggers_time = ticks_trig / CPU_TICKS_PER_MSEC;
 
@@ -1008,7 +1138,34 @@ void game_loop() {
             MotionTrail_Update(&trail_p2, delta);
             MotionTrail_UpdateWaveTrail(&wave_trail_p2, delta);
             update_p1_trail(&state.player2, 1);
-            
+#ifdef __PSP__
+            {
+                // autoload test: what's on screen and its colors, now and then
+                extern bool psp_autoload_test;
+                static float dump_t;
+                if (psp_autoload_test && psp_teleport_watch > 0) {
+                    psp_teleport_watch -= delta;
+                    psp_log("  after teleport: %.0f,%.1f vel %.0f ground %d ud %d\n", state.player.x, state.player.y,
+                            state.player.vel_y, state.player.on_ground, state.player.upside_down);
+                }
+                dump_t += delta;
+                if (psp_autoload_test && dump_t > 2.f) {
+                    dump_t = 0;
+                    psp_log("dump at x %.0f\n", state.player.x);
+                    for (int o = 0; o < objects.count; o++) {
+                        if (objects.x[o] < state.camera_x || objects.x[o] > state.camera_x + 420) continue;
+                        if (!is_valid_object(objects.id[o])) continue;
+                        int cm = objects.col_channel[o], cd = objects.detail_col_channel[o];
+                        Color a = channels[get_col_channel_index(v2_channel(cm))].color;
+                        Color b = channels[get_col_channel_index(v2_channel(cd))].color;
+                        psp_log("  id %d at %.0f,%.0f v19 %d main %d (%d,%d,%d) detail %d (%d,%d,%d)\n",
+                                objects.id[o], objects.x[o], objects.y[o], objects.v1p9_col_channel[o],
+                                cm, a.r, a.g, a.b, cd, b.r, b.g, b.b);
+                    }
+                }
+            }
+#endif
+
             // If not dual, fade the p2 wave trial
             if (!state.dual) {
                 if (wave_trail_p2.opacity > 0) wave_trail_p2.opacity -= (0.02f * STEPS_HZ) * delta;
@@ -1150,7 +1307,14 @@ void game_loop() {
             C2D_SceneBegin(bot);
             C2D_TargetClear(bot, C2D_Color32(0, 0, 0, 255));
 
+#ifndef __PS2__
+            /* On 3DS the second physical framebuffer needs its own
+             * background. On PS2 both targets share the same GS framebuffer:
+             * drawing this background after the level completely obscured
+             * the original game's objects and player. The top scene already
+             * fills the PS2 stage; keep bottom HUD/touch effects below. */
             draw_background((state.background_x / 8) + 40, 200);
+#endif
 
             C2D_ViewScale(SCALE, SCALE);
             C2D_ViewTranslate(0, CAM_Y_MTX_OFFSET);
@@ -1159,8 +1323,10 @@ void game_loop() {
             draw_bottom_particles();
             change_blending(false);
 
+#ifndef __PS2__
             draw_ground(state.ground_x + 52.5f, 0.f, -71.f, false, SCREEN_BOT_WIDTH);
             draw_ground(state.ground_x + 52.5f, 0.f, 210.f, true, SCREEN_BOT_WIDTH);
+#endif
 
             C2D_ViewTranslate(0, -CAM_Y_MTX_OFFSET);
             C2D_ViewScale(1/SCALE, 1/SCALE);
@@ -1227,7 +1393,12 @@ void game_loop() {
             }
 
             if (state.noclip) {
+#ifdef __PSP__
+                // the 3DS's bottom edge falls off the PSP's screen
+                draw_text(&bigFont_fontCharset, &bigFont_sheet, 4, 222, 0.35f, 0.35f, 0, true, "Noclip Activated");
+#else
                 draw_text(&bigFont_fontCharset, &bigFont_sheet, 0, 234, 0.5f, 0.5f, 0, true, "Noclip Activated");
+#endif
             }
             C2D_ViewReset();
 
@@ -1266,8 +1437,73 @@ void game_loop() {
         }
 #endif
 
+#ifdef PS2_DIAG_FRAME_TIMING
+        {
+            u64 finished = svcGetSystemTick();
+            float frame_ms = (float)(finished - start) / CPU_TICKS_PER_MSEC;
+            float update_ms = (float)(end - start) / CPU_TICKS_PER_MSEC;
+            float draw_ms = (float)(finished - end) / CPU_TICKS_PER_MSEC;
+            {
+                const float sec[7] = { physics_calc_time, collision_time, triggers_time,
+                                        sprite_drawing_time, particle_calc_time,
+                                        object_creating_time, object_sorting_time };
+                for (int i = 0; i < 7; i++) {
+                    prof_sec_sum[i] += sec[i];
+                    if (sec[i] > prof_sec_peak[i]) prof_sec_peak[i] = sec[i];
+                }
+            }
+            for (int i = 0; i < 4; i++) {
+                prof_trg_sum[i] += prof_trg[i];
+                if (prof_trg[i] > prof_trg_peak[i]) prof_trg_peak[i] = prof_trg[i];
+                prof_trg[i] = 0;
+            }
+            ++profile_frames;
+            profile_frame_sum += frame_ms;
+            profile_update_sum += update_ms;
+            profile_draw_sum += draw_ms;
+            if (frame_ms > profile_frame_peak) profile_frame_peak = frame_ms;
+            if (update_ms > profile_update_peak) profile_update_peak = update_ms;
+            if (draw_ms > profile_draw_peak) profile_draw_peak = draw_ms;
+            if (frame_ms > 20.0f) ++profile_over20;
+            if (frame_ms > 33.3f) ++profile_over33;
+            if ((unsigned)steps > profile_max_steps) profile_max_steps = (unsigned)steps;
+            prof_sprites_sum += (unsigned)sprite_count;
+            prof_objdraw_sum += object_drawing_time;
+            prof_player_sum += player_graphics_time;
+            if (player_graphics_time > prof_player_peak) prof_player_peak = player_graphics_time;
+            if (object_drawing_time > prof_objdraw_peak) prof_objdraw_peak = object_drawing_time;
+            if ((unsigned)sprite_count > prof_sprites_peak) prof_sprites_peak = (unsigned)sprite_count;
+            if (profile_frames >= 120) {
+                printf("GDPS2 FT: frames=120 avg=%.2fms max=%.2fms over20=%u over33=%u update_avg=%.2fms update_max=%.2fms draw_avg=%.2fms draw_max=%.2fms max_physics_steps=%u\n",
+                    profile_frame_sum/120.0f, profile_frame_peak,
+                    profile_over20, profile_over33,
+                    profile_update_sum/120.0f, profile_update_peak,
+                    profile_draw_sum/120.0f, profile_draw_peak, profile_max_steps);
+                printf("GDPS2 FT UPD: physics=%.2f/%.2f collision=%.2f/%.2f triggers=%.2f/%.2f objects=%.2f/%.2f particles=%.2f/%.2f create=%.2f/%.2f sort=%.2f/%.2f ms (avg/max)\n",
+                    prof_sec_sum[0]/120.0f, prof_sec_peak[0], prof_sec_sum[1]/120.0f, prof_sec_peak[1],
+                    prof_sec_sum[2]/120.0f, prof_sec_peak[2], prof_sec_sum[3]/120.0f, prof_sec_peak[3],
+                    prof_sec_sum[4]/120.0f, prof_sec_peak[4], prof_sec_sum[5]/120.0f, prof_sec_peak[5],
+                    prof_sec_sum[6]/120.0f, prof_sec_peak[6]);
+                printf("GDPS2 FT SPR: objdraw=%.2f/%.2fms player_fx=%.2f/%.2fms sprites_avg=%lu sprites_max=%u\n",
+                    prof_objdraw_sum/120.0f, prof_objdraw_peak, prof_player_sum/120.0f, prof_player_peak, prof_sprites_sum/120u, prof_sprites_peak);
+                printf("GDPS2 FT TRG: handle=%.2f/%.2f trig2=%.2f/%.2f anim=%.2f/%.2f colors=%.2f/%.2f ms (avg/max)\n",
+                    prof_trg_sum[0]/120.0f, prof_trg_peak[0], prof_trg_sum[1]/120.0f, prof_trg_peak[1],
+                    prof_trg_sum[2]/120.0f, prof_trg_peak[2], prof_trg_sum[3]/120.0f, prof_trg_peak[3]);
+                for (int i = 0; i < 4; i++) prof_trg_sum[i] = prof_trg_peak[i] = 0;
+                prof_sprites_sum = 0;
+                prof_sprites_peak = 0;
+                prof_objdraw_sum = prof_objdraw_peak = 0;
+                prof_player_sum = prof_player_peak = 0;
+                for (int i = 0; i < 7; i++) prof_sec_sum[i] = prof_sec_peak[i] = 0;
+                profile_frames = profile_over20 = profile_over33 = profile_max_steps = 0;
+                profile_frame_sum = profile_update_sum = profile_draw_sum = 0;
+                profile_frame_peak = profile_update_peak = profile_draw_peak = 0;
+            }
+        }
+#endif
+
         if (being_faded) {
-            if (song_loaded) unpause_playback_mp3();
+            if (song_loaded) unpause_playback_music();
             being_faded = false;
         }
 
@@ -1331,7 +1567,7 @@ void game_loop() {
     psp_log("teardown: default_screen_top unloaded\n");
 #endif
     
-    if (song_loaded) unpause_playback_mp3();
+    if (song_loaded) unpause_playback_music();
 
     game_state = (state.custom_level ? STATE_EXTERNAL_LEVELS : STATE_LEVEL_SELECT);
 }
@@ -1346,7 +1582,7 @@ void game_assets_init() {
     
     glowSheet = C2D_SpriteSheetLoad("romfs:/gfx/glow.t3x");
     if (!glowSheet) svcBreak(USERBREAK_PANIC);
-    
+
     iconSheet = C2D_SpriteSheetLoad("romfs:/gfx/icons.t3x");
     if (!iconSheet) svcBreak(USERBREAK_PANIC);
 
@@ -1390,19 +1626,83 @@ void load_sfx() {
     load_wav("romfs:/sfx/highscoreGet02.wav", &coin_sound);
 }
 
+#ifdef __PSP__
+// Settings > Graphics > Show FPS: the frames of the last half second, in the
+// top left corner over everything (c2d_psp.c calls this at each frame's end)
+void psp_frame_overlay(void) {
+    static u64 last;
+    static int frames, shown;
+    u64 now = svcGetSystemTick();
+
+    frames++;
+    if (!last) last = now;
+    float ms = (float)(now - last) / CPU_TICKS_PER_MSEC;
+    if (ms >= 500.f) {
+        shown = (int)(frames * 1000.f / ms + 0.5f);
+        frames = 0;
+        last = now;
+    }
+
+    if (!settingsState.showFps) return;
+    PSP_OverlayBegin(top, bot);
+    C2D_ViewReset();
+    change_blending(false);
+    draw_text(&bigFont_fontCharset, &bigFont_sheet, 5, 14, 0.4f, 0.4f, 0, false, "FPS: %d", shown);
+}
+#endif
+
 int main(int argc, char* argv[]) {
     // Init libs
+    GDPS2_BOOT(0, "main entry");
+#ifdef __PS2__
+    GDPS2_BOOT(1, "SIF RPC before ROMFS host: probe");
+    PS2_BootInitRpc();
+#ifdef PS2_DIAG_FRAME_TIMING
+    /* Diagnostic ELF only: keep printf output in a file next to the ELF. */
+    if (freopen("host:ft.log", "w", stdout)) setvbuf(stdout, NULL, _IOLBF, 0);
+#endif
+    PS2_BootInitUsbLog();
+#endif
+    GDPS2_BOOT(2, "romfsInit");
+#ifdef __PS2__
+    PS2_SetLaunchPath(argc > 0 ? argv[0] : NULL);
+    Result ps2_romfs_status = romfsInit();
+    PS2_BootResult("romfsInit", (int)ps2_romfs_status);
+    if (ps2_romfs_status != 0) {
+        PS2_BootFatal("ROMFS unavailable (check assets.pak or romfs next to ELF)", (int)ps2_romfs_status);
+        puts("GDPS2 FATAL: ROMFS unavailable; expected assets.pak or romfs/menus/main_menu.txt next to ELF or on a mounted device");
+        return 1;
+    }
+#else
     romfsInit();
+#endif
+    GDPS2_BOOT(3, "gfxInitDefault / gsKit TexManager");
     gfxInitDefault();
+    GDPS2_BOOT(4, "C3D_Init and C2D_Init");
+#ifdef __PS2__
+    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4)) {
+        PS2_BootResult("C3D_Init", -1);
+        svcBreak(USERBREAK_PANIC);
+    }
+    PS2_BootResult("C3D_Init", 0);
+    if (!C2D_Init(MAX_SPRITES)) {
+        PS2_BootResult("C2D_Init", -1);
+        svcBreak(USERBREAK_PANIC);
+    }
+    PS2_BootResult("C2D_Init", 0);
+#else
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
     C2D_Init(MAX_SPRITES);
+#endif
     C2D_Prepare();
     osSetSpeedupEnable(1);
 
+    GDPS2_BOOT(5, "configuration and platform settings");
     cfg_init();
     cfguInit();
 
     // Sort out wide / 3D before making the targets, they need different sizes
+    GDPS2_BOOT(6, "screen targets and layout");
     apply_screen_modes();
     reinitialize_screens();
 
@@ -1411,37 +1711,82 @@ int main(int argc, char* argv[]) {
     
     C2D_SetTintMode(C2D_TintMult);
     
-    if(ndspInit()) {
+    GDPS2_BOOT(7, "ndspInit (audsrv/SPU2)");
+    Result dsp_status = ndspInit();
+#ifdef __PS2__
+    PS2_BootResult("ndspInit", (int)dsp_status);
+#endif
+    if(dsp_status) {
+#ifdef __PS2__
+        /* no_dsp_firmware() is a 3DS-only error screen. It uses ANSI
+         * text and exits via the 3DS console path, which is not usable
+         * on a physical PS2 and obscures the actual audsrv failure. */
+        PS2_BootFatal("PS2 audsrv/SPU2 initialization failed; stopping before game assets", (int)dsp_status);
+        return 1;
+#else
         no_dsp_firmware();
+#endif
     }
+#ifdef __PS2__
+    else {
+        /* PS2SDK enters main() at EE priority 1. That starved both the
+         * mpg123 decoder and audsrv mixer despite 60 FPS GS rendering.
+         * In PCSX2, changing the main thread to 32 (mixer=24) restored
+         * ~256 PCM blocks per 3 seconds with no DelayThread in FrameEnd.
+         * Only the native PS2 port changes scheduling; PSP/3DS is intact. */
+        const int old_priority = ChangeThreadPriority(TH_SELF, 0x20);
+        ee_thread_status_t status;
+        if (ReferThreadStatus(TH_SELF, &status) < 0 || status.current_priority != 0x20) {
+            printf("GDPS2 WARNING: could not normalize main EE priority (result=%d)\n",
+                   old_priority);
+        } else {
+            printf("GDPS2 PS2: main EE priority %d -> %d; audsrv mixer priority 24\n",
+                   old_priority, status.current_priority);
+        }
+    }
+#endif
 
+#ifdef __PS2__
+    // the OptiProjects logo, before the loading screen
+    PS2_RunStartupLogo(top);
+#endif
+
+    GDPS2_BOOT(8, "required loading screen atlases");
     required_loading_screen_assets_init();
 
+    GDPS2_BOOT(9, "loading screen UI initialization");
     loading_screen_init();
 
     u64 start = svcGetSystemTick();
 
+    GDPS2_BOOT(10, "first loading screen draw");
     loading_screen_update(0);
 
+    GDPS2_BOOT(11, "UI atlases");
     ui_assets_init();
+    GDPS2_BOOT(12, "gameplay atlases and particles");
     game_assets_init();
     loading_screen_update(10);
 
+    GDPS2_BOOT(13, "load main level progress and stats");
     load_main_level_progress();
     
     loading_screen_update(25);
 
     calculate_stats();
 
+    GDPS2_BOOT(14, "cache_all_sprites");
     cache_all_sprites();
 
     loading_screen_update(40);
     
+    GDPS2_BOOT(15, "effect pools and player colors");
     init_default_use_effect_pools();
     update_player_colors();
 
     loading_screen_update(75);
 
+    GDPS2_BOOT(16, "load_sfx WAV assets");
     load_sfx();
 
     memset(&level_info, 0, sizeof(LoadedLevelInfo));
@@ -1449,11 +1794,14 @@ int main(int argc, char* argv[]) {
     loading_screen_update(90);
 
     u64 end = svcGetSystemTick();
-    float loading_time = (end - start) / (CPU_TICKS_PER_MSEC) / 1000;
-    
-    // Wait a minimum of 3 seconds
-    long waiting = (long)((3 - loading_time) * 1e9);
-    if (waiting > 0) svcSleepThread(waiting);
+    // Wait a minimum of 3 seconds. Use integer ticks: the old 1e9 literal
+    // invoked software double, and a 3e9-ns wait overflowed a 32-bit long.
+    const u64 min_loading_ticks = (u64)SYSCLOCK_ARM11 * 3u;
+    const u64 elapsed_loading_ticks = end - start;
+    if (elapsed_loading_ticks < min_loading_ticks) {
+        const u64 ticks_to_wait = min_loading_ticks - elapsed_loading_ticks;
+        svcSleepThread((s64)(ticks_to_wait * 1000000000ULL / SYSCLOCK_ARM11));
+    }
     loading_screen_update(100);
 
     // Unload loading screen
@@ -1463,6 +1811,21 @@ int main(int argc, char* argv[]) {
     // Set to known value
     change_blending(false);
 
+#ifdef __PSP__
+    // For testing: an autoload.gmd next to the EBOOT is played right away,
+    // with noclip (it plays through by itself)
+    FILE *autoload = fopen("autoload.gmd", "rb");
+    if (autoload) {
+        fclose(autoload);
+        snprintf(state.custom_level_path, sizeof(state.custom_level_path), "autoload.gmd");
+        state.custom_level = true;
+        state.noclip = true;
+        game_state = STATE_GAME;
+        psp_autoload_test = true;
+    }
+#endif
+
+    GDPS2_BOOT(17, "enter game state loop / STATE_MAIN_MENU");
     bool exit = false;
     while (aptMainLoop() && !exit) {
         // Update color if changed menus
@@ -1501,15 +1864,24 @@ int main(int argc, char* argv[]) {
 
         switch (game_state) {
             case STATE_MAIN_MENU:
+#ifdef __PS2__
+                PS2_BootEvent("GDPS2 STATE: MAIN_MENU");
+#endif
                 main_menu_loop();
                 break;
             case STATE_LEVEL_SELECT:
+#ifdef __PS2__
+                PS2_BootEvent("GDPS2 STATE: LEVEL_SELECT");
+#endif
                 level_select_loop();
                 break;
             case STATE_ICON_KIT:
                 icon_kit_loop();
                 break;
             case STATE_GAME:
+#ifdef __PS2__
+                PS2_BootEvent("GDPS2 STATE: GAME");
+#endif
                 game_loop();
                 break;
             case STATE_CREATOR_MENU:

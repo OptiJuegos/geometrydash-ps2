@@ -8,7 +8,7 @@
 #include "color_channels.h"
 #include "main.h"
 #include "objects.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "math_helpers.h"
 #include "particles/object_particles.h"
@@ -18,6 +18,11 @@
 #include "utils/string_helpers.h"
 
 #include "player/collision.h"
+#include "triggers_v2.h"
+#ifdef __PS2__
+#include "utils/gd_split_tokens.h"
+#endif
+#include "ps2_fast_float.h"
 
 ObjectsArray objects = { 0 };
 
@@ -89,15 +94,44 @@ void assign_object_to_section(int obj) {
     sec->objects[sec->object_count++] = obj;
 }
 
+#if defined(__PSP__) || defined(__PS2__)
+// An object moved (2.0 move triggers): into the section of where it is now,
+// if that's another one, so drawing and collisions still find it
+void move_object_section(int obj, float old_x, float old_y) {
+    int ox = (int)(old_x / SECTION_SIZE), oy = (int)(old_y / SECTION_SIZE);
+    int nx = (int)(objects.x[obj] / SECTION_SIZE), ny = (int)(objects.y[obj] / SECTION_SIZE);
+    if (ox == nx && oy == ny) return;
+
+    Section *sec = get_section(ox, oy);
+    for (int i = 0; i < sec->object_count; i++) {
+        if (sec->objects[i] == obj) {
+            sec->objects[i] = sec->objects[--sec->object_count];
+            break;
+        }
+    }
+    assign_object_to_section(obj);
+}
+#endif
+
 char *read_file(const char *filepath, size_t *out_size) {
+    if (out_size) *out_size = 0;
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         output_log("Failed to open file: %s\n", filepath);
         return NULL;
     }
-    fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
-    rewind(f);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        output_log("Failed to seek file: %s\n", filepath);
+        fclose(f);
+        return NULL;
+    }
+    long length = ftell(f);
+    if (length <= 0 || fseek(f, 0, SEEK_SET) != 0) {
+        output_log("Invalid or empty file: %s\n", filepath);
+        fclose(f);
+        return NULL;
+    }
+    size_t size = (size_t)length;
 
     char *buffer = malloc(size + 1);
     if (!buffer) {
@@ -105,7 +139,12 @@ char *read_file(const char *filepath, size_t *out_size) {
         fclose(f);
         return NULL;
     }
-    fread(buffer, 1, size, f);
+    if (fread(buffer, 1, size, f) != size) {
+        output_log("Incomplete file read: %s\n", filepath);
+        free(buffer);
+        fclose(f);
+        return NULL;
+    }
     buffer[size] = '\0'; // Null-terminate for text files
     fclose(f);
 
@@ -351,6 +390,9 @@ char *decompress_level(char *data) {
 }
 
 char **split_string(const char *str, char delimiter, int *outCount) {
+#ifdef __PS2__
+    return gd_split_tokens(str, delimiter, outCount);
+#else
     char **result = NULL;
     int count = 0;
     const char *start = str;
@@ -382,6 +424,7 @@ char **split_string(const char *str, char delimiter, int *outCount) {
 
     *outCount = count;
     return result;
+#endif
 }
 
 void free_string_array(char **arr, int count) {
@@ -393,6 +436,12 @@ void parse_color_channel(GDColorChannel *channels, int i, char *channel_string) 
     GDColorChannel channel = {0};  // Zero-initialize
     int kvCount = 0;
     char **kvs = split_string(channel_string, '_', &kvCount);
+
+#if defined(__PSP__) || defined(__PS2__)
+    channel.v2 = true;
+    channel.opacity = 1.f;
+    channel.s = channel.v = 1.f;
+#endif
 
     for (int j = 0; j + 1 < kvCount; j += 2) {
         int key = atoi(kvs[j]);
@@ -408,6 +457,22 @@ void parse_color_channel(GDColorChannel *channels, int i, char *channel_string) 
             case 11: channel.toRed = atoi(valStr); break;
             case 12: channel.toGreen = atoi(valStr); break;
             case 13: channel.toBlue = atoi(valStr); break;
+#if defined(__PSP__) || defined(__PS2__)
+            case 7:  channel.opacity = gd_parse_level_float(valStr); break;
+            case 9:  channel.copy_id = atoi(valStr); break;
+            case 10: {
+                float f[5] = { 0, 1, 1, 0, 0 };
+                const char *p = valStr;
+                for (int k = 0; k < 5 && *p; k++) {
+                    f[k] = gd_parse_level_float(p);
+                    while (*p && *p != 'a') p++;
+                    if (*p == 'a') p++;
+                }
+                channel.h = f[0]; channel.s = f[1]; channel.v = f[2];
+                channel.s_add = f[3] != 0; channel.v_add = f[4] != 0;
+                break;
+            }
+#endif
         }
     }
 
@@ -837,14 +902,29 @@ void fill_object_data(int object, int key, GDValueType type, GDValue val) {
         case 19: // 1.9 channel id
             if (type == GD_VAL_INT) objects.v1p9_col_channel[object] = convert_one_point_nine_channel(val.i);
             break;
+#if defined(__PSP__) || defined(__PS2__)
+        // 2.0 saves some objects (the sludge) with -1: their default color
+        case 21: // Main col channel
+            if (type == GD_VAL_INT && val.i > 0) objects.col_channel[object] = val.i;
+            col_note_used(val.i);
+            break;
+        case 22: // Detail col channel
+            if (type == GD_VAL_INT && val.i > 0) objects.detail_col_channel[object] = val.i;
+            col_note_used(val.i);
+            break;
+#else
         case 21: // Main col channel
             if (type == GD_VAL_INT) objects.col_channel[object] = val.i;
             break;
         case 22: // Detail col channel
             if (type == GD_VAL_INT) objects.detail_col_channel[object] = val.i;
             break;
+#endif
         case 23: // Target color ID
             if (type == GD_VAL_INT) objects.target_color_id[object] = val.i;
+#if defined(__PSP__) || defined(__PS2__)
+            col_note_used(val.i);
+#endif
             break;
         case 24: // Z layer
             if (type == GD_VAL_INT) objects.zlayer[object] = val.i;
@@ -877,6 +957,41 @@ bool is_valid_object(int id) {
     return id >= 1 && id < GAME_OBJECT_COUNT;
 }
 
+#if defined(__PSP__) || defined(__PS2__)
+// GD 2.0 teleport portals: the level saves only the way in (747) and how far
+// above it the way out is (54); the 749 is made at load, as GD (and wiidash)
+// do, right after the level's own objects
+#define MAX_TELEPORTS 128
+static int tp_in[MAX_TELEPORTS], tp_out[MAX_TELEPORTS];
+static float tp_dy[MAX_TELEPORTS];
+static int tp_count;
+
+int teleport_exit(int obj) {
+    for (int i = 0; i < tp_count; i++)
+        if (tp_in[i] == obj) return tp_out[i];
+    return -1;
+}
+
+static void note_teleport(int obj, char **tokens, int count) {
+    if (tp_count >= MAX_TELEPORTS) return;
+    float dy = 0;
+    for (int i = 0; i + 1 < count; i += 2)
+        if (atoi(tokens[i]) == 54) dy = gd_parse_level_float(tokens[i + 1]);
+    tp_in[tp_count] = obj;
+    tp_out[tp_count] = -1;
+    tp_dy[tp_count] = dy;
+    tp_count++;
+}
+
+// how many 747s the level string has (GD saves the id first: "1,747,...")
+static int count_teleports(char **sections, int count) {
+    int n = 0;
+    for (int i = 0; i < count; i++)
+        if (!strncmp(sections[i], "1,747,", 6)) n++;
+    return n < MAX_TELEPORTS ? n : MAX_TELEPORTS;
+}
+#endif
+
 int parse_gd_object(const char *objStr, int obj) {
     int count = 0;
     // Split object into each key
@@ -899,7 +1014,7 @@ int parse_gd_object(const char *objStr, int obj) {
                 fill_object_data(obj, key, GD_VAL_INT, val);
                 break;
             case GD_VAL_FLOAT:
-                val.f = atof(valStr);
+                val.f = gd_parse_level_float(valStr);
                 fill_object_data(obj, key, GD_VAL_FLOAT, val);
                 break;
             case GD_VAL_BOOL:
@@ -912,7 +1027,24 @@ int parse_gd_object(const char *objStr, int obj) {
     }
 
     int obj_id = objects.id[obj];
-    
+
+#if defined(__PSP__) || defined(__PS2__)
+    // a text object: its text (31, base64) and size (32), drawn by graphics.c
+    if (obj_id == TEXT_OBJECT) {
+        // (2.2 saves its width and height apart: 128, 129)
+        const char *text = NULL;
+        float scale = 1.f, sx = 1.f, sy = 1.f;
+        for (int i = 0; i + 1 < count; i += 2) {
+            int key = atoi(tokens[i]);
+            if (key == 31) text = tokens[i + 1];
+            else if (key == 32) scale = gd_parse_level_float(tokens[i + 1]);
+            else if (key == 128) sx = gd_parse_level_float(tokens[i + 1]);
+            else if (key == 129) sy = gd_parse_level_float(tokens[i + 1]);
+        }
+        if (text) text_object_add(obj, text, scale * sx, scale * sy);
+    }
+#endif
+
     if (is_valid_object(obj_id)) {
         // Get coins
         if (obj_id == SECRET_COIN) {
@@ -932,7 +1064,12 @@ int parse_gd_object(const char *objStr, int obj) {
             }
         } else {
             if (!objects.col_channel[obj]) objects.col_channel[obj] = game_object->base_color;
+#if defined(__PSP__) || defined(__PS2__)
+            if (!objects.detail_col_channel[obj])
+                objects.detail_col_channel[obj] = game_object->detail_color ? game_object->detail_color : 1;
+#else
             if (!objects.detail_col_channel[obj]) objects.detail_col_channel[obj] = 1;
+#endif
         }
 
         // Give each object its own random value
@@ -976,6 +1113,12 @@ int parse_gd_object(const char *objStr, int obj) {
         // Invalid object
         objects.id[obj] = 0;
     }
+
+#if defined(__PSP__) || defined(__PS2__)
+    // its groups and, for a 2.0 trigger, what it does
+    trig2_parse_object(obj, tokens, count);
+    if (objects.id[obj] == BLUE_TP_PORTAL) note_teleport(obj, tokens, count);
+#endif
 
     free_string_array(tokens, count);
     return 1;
@@ -1165,20 +1308,30 @@ int parse_string(const char *levelString) {
     }
     
     int objectCount = sectionCount - 1;
+    int totalCount = objectCount;
+#if defined(__PSP__) || defined(__PS2__)
+    // room for the teleports' ways out
+    tp_count = 0;
+    totalCount += count_teleports(sections + 1, objectCount);
+    text_objects_clear();
+#endif
 
     printf("%d\n", objectCount);
-    
-    if (!init_arrays(objectCount)) {
+
+    if (!init_arrays(totalCount)) {
         output_log("Failed to allocate object array\n");
         return 4;
     }
 
-    objects.count = objectCount;
+    objects.count = totalCount;
 
     printf("Parsing string and converting objects...\n");
     printf("Aproximately %d bytes of pure objects\n", sizeof(ObjectsArray) * objectCount);
     
     coin_count = 0;
+#if defined(__PSP__) || defined(__PS2__)
+    col_reset_used();
+#endif
 
     for (int i = 0; i < objectCount; i++) {
         // Parse
@@ -1191,6 +1344,31 @@ int parse_string(const char *levelString) {
         assign_object_to_section(i);
     }
 
+#if defined(__PSP__) || defined(__PS2__)
+    // each teleport's way out: the way in's keys (its groups, colors, ...),
+    // then its own id and place. As wiidash: a bit behind it, facing the
+    // other way (the way in mirrored: turned 180 it came out upside down)
+    int out = objectCount;
+    for (int k = 0; k < tp_count && out < totalCount; k++) {
+        int in = tp_in[k];
+        float rot = objects.rotation[in];
+        float x = objects.x[in] - 10 * fabsf(cosf(DegToRad(rot)));
+        float y = objects.y[in] + tp_dy[k];
+        const char *src = sections[in + 1];
+        size_t len = strlen(src) + 96;
+        char *str = malloc(len);
+        if (!str) break;
+        snprintf(str, len, "%s,1,%d,2,%.3f,3,%.3f,6,%.3f,4,%d,5,%d", src, ORANGE_TP_PORTAL, x, y, rot,
+                 !objects.flippedH[in], objects.flippedV[in]);
+        int ok = parse_gd_object(str, out);
+        free(str);
+        if (!ok) break;
+        tp_out[k] = out;
+        assign_object_to_section(out);
+        out++;
+    }
+#endif
+
     qsort(coin_ids, coin_count, sizeof(int), compare_coins);
 
     // Set IDs here
@@ -1198,6 +1376,10 @@ int parse_string(const char *levelString) {
         objects.coin_id[coin_ids[i]] = i;
         //output_log("Le coin %d on objeto %d\n", i, coin_ids[i]);
     }
+
+#if defined(__PSP__) || defined(__PS2__)
+    trig2_level_loaded();
+#endif
     
     level_info.last_obj_x += (11 * 30.f);
 
@@ -1217,7 +1399,12 @@ void set_color_channels() {
                 break;
 
             default:
+#if defined(__PSP__) || defined(__PS2__)
+                // every channel up to 999 (2.0 levels use them all), not just 1-4
+                if (id > 0 && id < CHANNEL_P1) {
+#else
                 if (!(id > COL_4 && id < CHANNEL_BG) && id < CHANNEL_P1) {
+#endif
                     int chan = get_col_channel_index(id);
 
                     memset(&channels[chan], 0, sizeof(ColorChannel));
@@ -1236,6 +1423,18 @@ void set_color_channels() {
                     if (id == CHANNEL_OBJ) {
                         channels[get_col_channel_index(CHANNEL_OBJ_BLENDING)].color = color;
                     }
+
+#if defined(__PSP__) || defined(__PS2__)
+                    col_note_used(id);
+                    channels[chan].alpha = 255;
+                    if (colorChannel.v2) {
+                        channels[chan].alpha = (u8)(CLAMP(colorChannel.opacity, 0.f, 1.f) * 255);
+                        if (colorChannel.copy_id > 0) {
+                            col_set_copy(id, v2_channel(colorChannel.copy_id), colorChannel.h, colorChannel.s,
+                                         colorChannel.v, colorChannel.s_add, colorChannel.v_add);
+                        }
+                    }
+#endif
                 }
         }
     }
@@ -1262,7 +1461,7 @@ void load_level_info(char *data, char *level_string) {
     
     char *gmd_song_offset = get_metadata_value(level_string, "kA13");
     if (gmd_song_offset) {
-        level_info.song_offset = atof(gmd_song_offset);
+        level_info.song_offset = gd_parse_level_float(gmd_song_offset);
         free(gmd_song_offset);
     } else {
         level_info.song_offset = 0;
@@ -1285,6 +1484,15 @@ void load_level_info(char *data, char *level_string) {
     }
     
     char *gamemode_data = get_metadata_value(level_string, "kA2");
+#if defined(__PSP__) || defined(__PS2__)
+    level_info.initial_robot = false;
+    if (gamemode_data && atoi(gamemode_data) >= GAMEMODE_COUNT) {
+        // 5 robot, 6 spider (as a robot for now)
+        level_info.initial_gamemode = GAMEMODE_PLAYER;
+        level_info.initial_robot = true;
+        free(gamemode_data);
+    } else
+#endif
     if (gamemode_data) {
         level_info.initial_gamemode = CLAMP(atoi(gamemode_data), 0, GAMEMODE_COUNT - 1);
         free(gamemode_data);
@@ -1377,6 +1585,14 @@ int load_level(char *path) {
     init_col_channels();
     set_color_channels();
 
+#if defined(__PSP__) || defined(__PS2__)
+    // the 2.0 sheet only for a level with 2.0 objects or the robot (before
+    // the pulse rods' sprites below: loading it redoes the sprites)
+    bool v2 = level_info.initial_robot;
+    for (int i = 0; i < objects.count && !v2; i++) v2 = objects.id[i] >= ROBOT_PORTAL;
+    v2_sheet_need(v2);
+#endif
+
     // Set pulserod pulse ball image
     current_pulserod_ball_image = game_objects[15].children[0].texture + (rand() % 3);
 
@@ -1407,9 +1623,16 @@ void reload_level() {
 
     init_col_channels();
     set_color_channels();
+#if defined(__PSP__) || defined(__PS2__)
+    trig2_reset(); // groups back where they started
+#endif
 }
 
 void unload_level() {
+#if defined(__PSP__) || defined(__PS2__)
+    trig2_free();
+    v2_sheet_need(false);
+#endif
     free_arrays();
     free_sections();
     free_object_particles();
@@ -1420,7 +1643,7 @@ void unload_level() {
         colorChannels = NULL;
     }
 
-    stop_mp3();
+    stop_music();
 }
 
 char *get_level_name(char *data_ptr) {

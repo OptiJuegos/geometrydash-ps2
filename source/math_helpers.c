@@ -51,6 +51,9 @@ float repeat(float a, float length) {
 }
 
 float positive_fmodf(float n, float divisor) {
+    /* fmodf is software on the PS2/PSP; most angles are already in range */
+    if (n >= 0 && n < divisor) return n;
+    if (n < 0 && n > -divisor) return n + divisor;
     float value = fmodf(n, divisor);
     return value + (value < 0 ? divisor : 0);
 }

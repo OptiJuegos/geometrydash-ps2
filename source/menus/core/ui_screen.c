@@ -52,6 +52,59 @@ UIScreen default_screen = {
 };
 UIScreen default_screen_top;
 
+#ifdef __PS2__
+#include "../../../ps2/src/ps2_ui_nav.h"
+
+PS2NavTarget ps2_nav_targets[PS2_NAV_MAX_TARGETS];
+int ps2_nav_target_count;
+const void *ps2_nav_slider_focus;
+int ps2_nav_slider_nudge;
+static bool ps2_clip_on;
+static float ps2_clip[4];
+
+void PS2_NavListClip(float x0, float y0, float x1, float y1)
+{
+    ps2_clip_on = true;
+    ps2_clip[0] = x0; ps2_clip[1] = y0;
+    ps2_clip[2] = x1; ps2_clip[3] = y1;
+}
+void PS2_NavListClipEnd(void) { ps2_clip_on = false; }
+
+static void ps2_collect_target(UIElement *e, UITransform *world)
+{
+    bool button = false;
+    switch (e->type) {
+        case UI_BUTTON: case UI_CHECKBOX: case UI_ICON:
+        case UI_COLOR_BUTTON: case UI_WINDOW_BUTTON:
+            button = true; break;
+        case UI_SLIDER: break;
+        default: if (!e->action) return; break;
+    }
+    if (e->type == UI_SLIDER && e == ps2_nav_slider_focus && ps2_nav_slider_nudge) {
+        UISlider *slider = (UISlider *)e;
+        slider->value += ps2_nav_slider_nudge * slider->max_value * 0.05f;
+        if (slider->value < 0) slider->value = 0;
+        if (slider->value > slider->max_value) slider->value = slider->max_value;
+        ps2_nav_slider_nudge = 0;
+    }
+    if (ps2_nav_target_count >= PS2_NAV_MAX_TARGETS || e->w < 4 || e->h < 4)
+        return;
+    PS2NavTarget *t = &ps2_nav_targets[ps2_nav_target_count++];
+    t->x = world->x; t->y = world->y;
+    t->hw = e->w * 0.5f * fabsf(world->scaleX);
+    t->hh = e->h * 0.5f * fabsf(world->scaleY);
+    t->bottom = e->screen ? e->screen->isBottom : true;
+    t->slider = e->type == UI_SLIDER;
+    t->keys = button ? ((UIButton *)e)->keyBinds : 0;
+    t->element = e;
+    t->in_list = ps2_clip_on;
+    if (ps2_clip_on) {
+        t->clip_x0 = ps2_clip[0]; t->clip_y0 = ps2_clip[1];
+        t->clip_x1 = ps2_clip[2]; t->clip_y1 = ps2_clip[3];
+    }
+}
+#endif
+
 #ifdef __PSP__
 #include "../../../psp/src/psp_port.h"
 // the menu's screens came from PSP layouts: one merged screen (ctru_psp.c)
@@ -316,6 +369,9 @@ void ui_update_tree(UIElement *e, UIInput *input, UITransform *parent) {
 #ifdef __PSP__
     if (e->psp_hidden) return;
 #endif
+#ifdef __PS2__
+    if (e->ps2_hidden) return;
+#endif
 
     UITransform world = ui_transform_combine(parent, e);
     
@@ -324,6 +380,9 @@ void ui_update_tree(UIElement *e, UIInput *input, UITransform *parent) {
         e->modify_transform(e, &world);
     
     e->update(e, input, &world);
+#ifdef __PS2__
+    ps2_collect_target(e, &world);
+#endif
 #ifdef __PSP__
     psp_collect_target(e, &world);
 #endif
@@ -340,6 +399,9 @@ void ui_draw_tree(UIElement *e, UITransform *parent) {
     if (!e->enabled) return;
 #ifdef __PSP__
     if (e->psp_hidden) return;
+#endif
+#ifdef __PS2__
+    if (e->ps2_hidden) return;
 #endif
 
     UITransform world = ui_transform_combine(parent, e);
@@ -443,6 +505,17 @@ void ui_screen_update(UIScreen* s, UIInput* touch) {
         .scaleY = 1.f
     };
 
+#ifdef __PS2__
+    /* The two 3DS UI trees share a GS display, not touch coordinate space.
+     * Only the selected logical screen may receive the virtual cursor. */
+    UIInput *original_touch = touch;
+    UIInput ps2_touch = *touch;
+    if (!PS2_NavScreenActive(s->isBottom)) {
+        ps2_touch.touchPosition.px = ps2_touch.touchPosition.py = 0;
+    }
+    touch = &ps2_touch;
+#endif
+
 #ifdef __PSP__
     // "@scale": all but the darkening behind, which still covers everything
     UITransform unscaled = identity;
@@ -457,6 +530,12 @@ void ui_screen_update(UIScreen* s, UIInput* touch) {
         ui_update_tree(e, touch, &identity);
 #endif
     }
+#ifdef __PS2__
+    /* Carry interaction masking across overlay/base screens while keeping
+     * each tree's own cursor coordinates. */
+    original_touch->did_something = ps2_touch.did_something;
+    original_touch->interacted = ps2_touch.interacted;
+#endif
 }
 
 // Draw all screen characters
@@ -801,6 +880,9 @@ void ui_element_apply_properties(UIElement *e, const UIContext *ctx, const UIPro
     e->custom_properties = ui_prop_list(props, "custom");
 #ifdef __PSP__
     e->psp_hidden = ui_prop_int(props, "psphide", 0) != 0;
+#endif
+#ifdef __PS2__
+    e->ps2_hidden = ui_prop_int(props, "ps2hide", 0) != 0;
 #endif
 }
 

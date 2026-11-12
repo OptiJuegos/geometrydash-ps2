@@ -46,12 +46,20 @@ extern int number_of_collisions_checks;
 #define YELLOW_ORB 36
 #define PINK_ORB 141
 #define BLUE_ORB 84
+#define GREEN_ORB 1022 // GD 2.0: flips gravity and jumps
 
 #define CUBE_PORTAL 12
 #define SHIP_PORTAL 13
 #define BALL_PORTAL 47
 #define UFO_PORTAL 111
 #define WAVE_PORTAL 660
+#define ROBOT_PORTAL 745
+#define BLUE_TP_PORTAL 747   // GD 2.0 teleport: in...
+#define ORANGE_TP_PORTAL 749 // ... and out (made at load, 54 above the in one)
+#if defined(__PSP__) || defined(__PS2__)
+// player.c, after a step's collisions: the teleport touched in them, if any
+void apply_pending_teleport(Player *player);
+#endif
 
 #define BLUE_GRAVITY_PORTAL 10
 #define YELLOW_GRAVITY_PORTAL 11

@@ -95,6 +95,8 @@ compile_commands.json
 # build output (make -f Makefile.psp package)
 psp/build/
 psp/out/
+# Native PS2 bring-up outputs
+ps2/out/
 EBOOT.PBP
 PARAM.SFO
 *.prx
@@ -105,3 +107,7 @@ gdtestpsp.lnk
 gd3ds/
 gd211-decomp/
 __pycache__/
+# the Steam game's own files (each one uses their copy): sprite sheets, songs
+steam-resources
+# AleFunky's Wii port (2.0 objects' sprites and table come from it)
+wiidash

@@ -28,6 +28,18 @@ typedef enum {
 } IconGamemode;
 
 #define TRAIL 5
+#if defined(__PSP__) || defined(__PS2__)
+// the icon kit's robot page (after the trails': the robot isn't a gamemode of
+// its own, it's the cube's in robot portals)
+#define ROBOT 6
+// (GD has 68: the first ones only, to keep their sheet small; with
+// psp/tools/mkrobots.py's ROBOTS)
+#define ROBOT_COUNT 25
+#define ICON_COUNT_ROBOT (ROBOT_COUNT + 1)
+#define ICON_KIT_PAGES 7
+#else
+#define ICON_KIT_PAGES 6
+#endif
 
 #define ICON_COUNT_PLAYER 142
 #define ICON_COUNT_SHIP 51

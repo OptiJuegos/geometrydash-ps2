@@ -13,7 +13,7 @@
 #include "main.h"
 #include "easing.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "main_menu.h"
 #include "level_select.h"
@@ -112,7 +112,7 @@ void pause_game() {
 
     update_progress_bars();
     game_paused = true;
-    if (song_loaded || state.practice_mode) pause_playback_mp3();
+    if (song_loaded || state.practice_mode) pause_playback_music();
     if (!state.custom_level){
         ui_run_func_on_tag(&default_screen_top, "coin_1", ui_enable_element);
         ui_run_func_on_tag(&default_screen_top, "coin_2", ui_enable_element);
@@ -137,7 +137,7 @@ void unpause_game() {
         sync_precise_input(true);
     }
     if (state.death_timer <= 0 && (song_loaded || state.practice_mode)) {
-        unpause_playback_mp3();
+        unpause_playback_music();
     }
     if (!state.custom_level){
         ui_run_func_on_tag(&default_screen_top, "coin_1", ui_disable_element);
@@ -176,9 +176,9 @@ static void restart_level() {
         if (checkpoint_count > 0) {
             restore_checkpoint();
         } else {
-            seek_mp3(level_info.song_offset);
+            seek_music(level_info.song_offset);
         }
-    } else if (song_loaded) seek_mp3(level_info.song_offset);
+    } else if (song_loaded) seek_music(level_info.song_offset);
 
     reset_coins();
 
@@ -239,10 +239,19 @@ static UIAction actions[] = {
 };
 
 void gameplay_screen_init() {
+#ifdef __PS2__
+    /* One merged PS2 screen: do not overlay BOTH 3DS pause windows. */
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/gameplay_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/gameplay.txt");
+#endif
     bg_gradient = (UIImage *) ui_get_element_by_tag(&default_screen, "gradient");
 
-    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/gameplay_top.txt");;
+#ifdef __PS2__
+    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/gameplay_top_ps2.txt");
+#else
+    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/gameplay_top.txt");
+#endif
     progress_bar = (UIProgressBar *) ui_get_element_by_tag(&default_screen_top, "progressalert");
     percent = (UILabel *) ui_get_element_by_tag(&default_screen_top, "percent");
     level_name = (UILabel *) ui_get_element_by_tag(&default_screen_top, "level_title");
@@ -310,7 +319,20 @@ int gameplay_screen_top_loop() {
     if (settingsState.ultraDecimalPercent) decimal = MAX_DECIMAL_PERCENT;
 
     progress_bar->value = state.level_progress;
-    snprintf(percent->text, 32, "%.*f%%", decimal, state.level_progress);
+#ifdef __PS2__
+    /* Most players use integer progress. On the EE, %f promotes a float to
+     * software-emulated double every frame, even for zero decimal places.
+     * Match printf's round-to-nearest, ties-to-even for positive percentages. */
+    if (decimal == 0 && state.level_progress >= 0.0f && state.level_progress <= 100.0f) {
+        int rounded = (int)state.level_progress;
+        const float fraction = state.level_progress - (float)rounded;
+        if (fraction > 0.5f || (fraction == 0.5f && (rounded & 1))) ++rounded;
+        snprintf(percent->text, 32, "%d%%", rounded);
+    } else
+#endif
+    {
+        snprintf(percent->text, 32, "%.*f%%", decimal, state.level_progress);
+    }
 
     ui_run_func_on_tag(&default_screen_top, "progressalert", ui_disable_element);
     ui_run_func_on_tag(&default_screen_top, "percent", ui_disable_element);
@@ -354,6 +376,11 @@ int gameplay_screen_bot_loop() {
             ui_element_set_scale((UIElement *) coins_full[i], scale);
             ui_image_set_tint(coins_full[i], C2D_Color32f(1, 1, 1, opacity));
 
+#if defined(__PSP__) || defined(__PS2__)
+            // The touch screen's coin pop: laid over the level on the PSP, it
+            // showed up in the top left corner, as if it were the coin's own
+            coins_circles_spawned[i] = true;
+#endif
             if(coin_anims[i] >= 0.05f){
                 if(!coins_circles_spawned[i]){
                     ui_set_use_effect_col(

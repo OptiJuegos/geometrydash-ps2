@@ -69,6 +69,10 @@ struct UIElement {
     // but is neither drawn nor touched
     bool psp_hidden;
 #endif
+#ifdef __PS2__
+    /* Keep tagged placeholders for gameplay code, omit their visual/UI cost. */
+    bool ps2_hidden;
+#endif
 
     bool draws_children;
 

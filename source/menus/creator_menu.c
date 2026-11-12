@@ -14,7 +14,7 @@
 #include "main.h"
 #include "easing.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "main_menu.h"
 #include "level_select.h"
@@ -85,9 +85,17 @@ void creator_menu_loop() {
     exit_flag = false;
     new_state = STATE_CREATOR_MENU;
 
+#ifdef __PS2__
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/creator_menu_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/creator_menu.txt");
+#endif
     bg_gradient = (UIImage *) ui_get_element_by_tag(&default_screen, "gradient");
+#ifdef __PS2__
+    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/creator_menu_top_ps2.txt");
+#else
     ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/creator_menu_top.txt");
+#endif
     bg_gradient_top = (UIImage *) ui_get_element_by_tag(&default_screen_top, "gradient_top");
 
     ui_image_set_tint(bg_gradient, C2D_Color32(50, 110, 255, 255));
@@ -98,7 +106,7 @@ void creator_menu_loop() {
     set_fade_status(FADE_STATUS_IN);
 
     if (!playing_menu_loop) {
-        play_mp3("romfs:/songs/menuLoop.mp3", true, 0);
+        play_music("romfs:/songs/menuLoop.mp3", true, 0);
         playing_menu_loop = true;
     }
 

@@ -1,0 +1,56 @@
+# PS2SDK make build. Provide PS2DEV, PS2SDK and GSKIT, and put the EE tools in PATH.
+# On Windows with the bundled toolchain, use: powershell -File ps2/build.ps1
+
+EE_BIN = ps2/out/gdps2-prototype.elf
+EE_OBJS = ps2/out/prototype.o
+EE_LIBS = -L$(GSKIT)/lib -lgskit -ldmakit -lpad -lm -lc -lkernel
+EE_INCS = -I$(GSKIT)/include -Ipsp/include -Ips2/src
+EE_CFLAGS = -std=gnu11 -Wextra -D__PS2__
+
+ifeq ($(OS),Windows_NT)
+MKDIR_PS2_OUT = if not exist ps2\out mkdir ps2\out
+else
+MKDIR_PS2_OUT = mkdir -p ps2/out
+endif
+
+all: $(EE_BIN)
+
+menu: ps2/out/gdps2-menu.elf
+
+ps2/out/main_menu.p2sheet ps2/out/menu_layout.h &: ps2/tools/make_menu_ps2.py ps2/tools/mkatlas_ps2.py psp/tools/mkatlas.py psp/menus/main_menu_psp.txt psp/menus/main_menu_top_psp.txt source/menus/main_menu.c gfx/ui/ui.t3s gfx/ui/ui_2/ui_2.t3s $(wildcard gfx/ui/*.png gfx/ui/ui_2/*.png psp/gfx/ui/ui_2/*.png)
+	@$(MKDIR_PS2_OUT)
+	python ps2/tools/make_menu_ps2.py ps2/out/main_menu.p2sheet ps2/out/menu_layout.h
+
+ps2/out/assets.o: ps2/assets.S ps2/out/main_menu.p2sheet
+	@$(MKDIR_PS2_OUT)
+	$(EE_CC) -c $< -o $@
+
+ps2/out/menu_demo.o: ps2/menu_demo.c ps2/src/c2d_ps2.h ps2/out/menu_layout.h
+	@$(MKDIR_PS2_OUT)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -Ips2/out -c $< -o $@
+
+ps2/out/c2d_ps2.o: ps2/src/c2d_ps2.c ps2/src/c2d_ps2.h
+	@$(MKDIR_PS2_OUT)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+ps2/out/ctru_ps2_input.o: ps2/src/ctru_ps2_input.c ps2/src/ctru_ps2_input.h
+	@$(MKDIR_PS2_OUT)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+ps2/out/gdps2-menu.elf: ps2/out/menu_demo.o ps2/out/c2d_ps2.o ps2/out/ctru_ps2_input.o ps2/out/assets.o
+	$(EE_CC) -T$(EE_LINKFILE) -o $@ $^ $(EE_LDFLAGS) $(EE_LIBS)
+
+ps2/out/prototype.o: ps2/prototype.c
+	$(DIR_GUARD)
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+clean:
+	$(RM) $(EE_BIN) $(EE_OBJS) ps2/out/gdps2-menu.elf ps2/out/menu_demo.o ps2/out/c2d_ps2.o ps2/out/ctru_ps2_input.o ps2/out/assets.o
+
+.PHONY: all menu clean
+
+include $(PS2SDK)/samples/Makefile.pref
+include $(PS2SDK)/samples/Makefile.eeglobal
+
+# The SDK's default mkdir -p recipe is not accepted by Windows cmd.exe.
+override DIR_GUARD = @$(MKDIR_PS2_OUT)

@@ -5,11 +5,12 @@
 #include "graphics.h"
 #include "player/player.h"
 #include "state.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "math_helpers.h"
 #include "color_channels.h"
 #include "utils/gfx.h"
 #include "menus/settings.h"
+#include "triggers_v2.h"
 
 #define MAX_CHECKPOINTS 100
 #define CHECKPOINT_GFX_ID 6
@@ -47,11 +48,22 @@ typedef struct CheckpointData {
     int current_fading_effect;
     bool p1_trail;
 
+#if defined(__PSP__) || defined(__PS2__)
+    // only the channels the level uses (col_snapshot_*): all 1000 in a
+    // hundred checkpoints were 2 MB, too much for a PSP-1000
+    void *col_snap;
+#else
     ColorChannel channels[COL_CHANNEL_NUM];
     ColTriggerBuffer col_trigger_buffer[COL_CHANNEL_NUM];
-    
+#endif
+
     float song_offset;
 
+#if defined(__PSP__) || defined(__PS2__)
+    void *trig2; // the 2.0 triggers' groups at that point (triggers_v2.c)
+    CopyLink copy_links[MAX_COPY_LINKS];
+    int copy_link_count;
+#endif
 } CheckpointData;
 
 CheckpointData checkpoints[MAX_CHECKPOINTS];
@@ -117,8 +129,19 @@ void new_checkpoint() {
 
     check->song_offset = level_info.song_offset + state.player.timeElapsed;
 
+#if defined(__PSP__) || defined(__PS2__)
+    check->col_snap = col_snapshot_save(check->col_snap);
+#else
     memcpy(check->channels, channels, sizeof(channels));
     memcpy(check->col_trigger_buffer, col_trigger_buffer, sizeof(col_trigger_buffer));
+#endif
+
+#if defined(__PSP__) || defined(__PS2__)
+    trig2_free_snapshot(check->trig2); // the slot's last one, if any
+    check->trig2 = trig2_save();
+    memcpy(check->copy_links, copy_links, sizeof(copy_links));
+    check->copy_link_count = copy_link_count;
+#endif
 
     set_checkpoint_timer(AUTO_CHECKPOINT_TIME);
 }
@@ -164,10 +187,20 @@ void restore_checkpoint() {
     current_fading_effect = check->current_fading_effect;
     p1_trail = check->p1_trail;
 
-    if (settingsState.practiceMusicSync) seek_mp3(check->song_offset);
+    if (settingsState.practiceMusicSync) seek_music(check->song_offset);
     
+#if defined(__PSP__) || defined(__PS2__)
+    col_snapshot_restore(check->col_snap);
+#else
     memcpy(channels, check->channels, sizeof(channels));
     memcpy(col_trigger_buffer, check->col_trigger_buffer, sizeof(col_trigger_buffer));
+#endif
+
+#if defined(__PSP__) || defined(__PS2__)
+    trig2_restore(check->trig2); // moved groups back, fades, toggles
+    memcpy(copy_links, check->copy_links, sizeof(copy_links));
+    copy_link_count = check->copy_link_count;
+#endif
 
     update_attempt_text_pos();
 
@@ -186,6 +219,14 @@ void delete_last_checkpoint() {
 }
 
 void clear_practice_mode() {
+#if defined(__PSP__) || defined(__PS2__)
+    for (int i = 0; i < MAX_CHECKPOINTS; i++) {
+        trig2_free_snapshot(checkpoints[i].trig2);
+        checkpoints[i].trig2 = NULL;
+        free(checkpoints[i].col_snap);
+        checkpoints[i].col_snap = NULL;
+    }
+#endif
     checkpoint_count = 0;
     checkpoint_pointer = 0;
     state.practice_mode = false;
@@ -198,7 +239,7 @@ void start_practice_mode() {
     state.practice_mode = true;
     
     if (!settingsState.practiceMusicSync) {
-        stop_mp3();
+        stop_music();
         play_practice_song();
     }
 }
@@ -209,9 +250,9 @@ void exit_practice_mode() {
     reload_level(); 
 
     if (settingsState.practiceMusicSync) {
-        seek_mp3(level_info.song_offset);
+        seek_music(level_info.song_offset);
     } else {
-        stop_mp3();
+        stop_music();
         play_level_song(level_info.song_offset);
     }
 }

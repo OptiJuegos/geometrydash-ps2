@@ -67,6 +67,11 @@ void ui_button_update(UIElement* e, UIInput* touch, UITransform *transform) {
     bool releasedTouch = hidKeysUp() & KEY_TOUCH;
 
     bool inside = ui_element_basic_bound_check(e, touch, transform) && !pressedKey;
+#ifdef __PS2__
+    /* Only the topmost interactive target may hover/click, even if an
+     * invisible hit area overlaps a window button (level select). */
+    if (touch->interacted) inside = false;
+#endif
 
     // Check if pressed the button
     if (inside && pressedTouch && !touch->did_something) {
@@ -80,7 +85,12 @@ void ui_button_update(UIElement* e, UIInput* touch, UITransform *transform) {
     }
     
     // If released on button, do its action
-    if (button->hovered && releasedTouch && !pressedKey) {
+    if (button->hovered && releasedTouch && !pressedKey
+#ifdef __PS2__
+        /* A moved controller cursor cannot click its old hover target. */
+        && inside
+#endif
+        ) {
         button->pressed = false;
         button->hovered = false;
         button->hoverTimer = 0.f;

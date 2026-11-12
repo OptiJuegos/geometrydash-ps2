@@ -86,7 +86,10 @@ void load_main_level_progress() {
         init_default(&main_level_config[i]);
         init_values(&main_level_config[i], &main_level_data[i]);
 
+#ifndef __PS2__
+        /* Loading a level must not rewrite every file on a Memory Card. */
         config_save(&main_level_config[i]);
+#endif
     }
 }
 
@@ -118,7 +121,9 @@ void load_level_progress(char *filename) {
     init_default(&curr_level_config);
     init_values(&curr_level_config, &level_data);
 
+#ifndef __PS2__
     config_save(&curr_level_config);
+#endif
 }
 
 void save_level_progress() {

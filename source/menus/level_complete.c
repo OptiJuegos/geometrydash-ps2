@@ -13,7 +13,7 @@
 #include "fonts/bigFont.h"
 #include "main.h"
 #include "easing.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "level_select.h"
 #include "state.h"
 #include "menus/components/ui_darken.h"
@@ -44,6 +44,20 @@ static bool animating_up = false;
 static float anim_time = 0;
 
 static float up_y_start = 0;
+
+// Reward sizes/anchors set from code. PS2 shows the whole result panel at
+// 0.74 scale around its window center, so these follow the same ratio.
+#ifdef __PS2__
+#define LC_COIN_SCALE 0.68f
+#define LC_STAR_SCALE 0.53f
+#define LC_STAR_TEXT_SCALE 0.42f
+#define LC_STAR_CENTER 146
+#else
+#define LC_COIN_SCALE 0.88f
+#define LC_STAR_SCALE 0.7f
+#define LC_STAR_TEXT_SCALE 0.55f
+#define LC_STAR_CENTER 128
+#endif
 static float window_y_pos = 0;
 
 static int rewardAnimPhase = 0;
@@ -129,7 +143,7 @@ static void restart_level(UIElement* e) {
         animating_up = true;
         animating_down = false;
         anim_time = 0;
-        pause_playback_mp3();
+        pause_playback_music();
     }
 }
 
@@ -221,7 +235,7 @@ static void run_rewards_animation(float delta){
         
         coin->base.enabled = true;
 
-        ui_element_set_scale((UIElement *) coin, scale_value * 0.88f);
+        ui_element_set_scale((UIElement *) coin, scale_value * LC_COIN_SCALE);
 
         ui_image_set_tint(coin, C2D_Color32f(1, 1, 1, opacity_value));
     } else{
@@ -233,13 +247,13 @@ static void run_rewards_animation(float delta){
             star->base.enabled = true;
             star_text->base.enabled = true;
 
-            //scale around y = 128 (relative to window)
-            int center = up_y_start - 128;
-            star->base.y = ((scale_value * 0.7f) * (up_y_start - 127 - center) + center);
-            star_text->base.y = ((scale_value * 0.55f) * (up_y_start - 83 - center) + center);
+            //scale around y = LC_STAR_CENTER (relative to window)
+            int center = up_y_start - LC_STAR_CENTER;
+            star->base.y = ((scale_value * LC_STAR_SCALE) * (up_y_start - (LC_STAR_CENTER - 1) - center) + center);
+            star_text->base.y = ((scale_value * LC_STAR_TEXT_SCALE) * (up_y_start - (LC_STAR_CENTER - 45) - center) + center);
 
-            ui_element_set_scale((UIElement *) star, scale_value * 0.7f);
-            ui_element_set_scale_xy((UIElement *) star_text, scale_value * 0.55f, scale_value * 0.55f);
+            ui_element_set_scale((UIElement *) star, scale_value * LC_STAR_SCALE);
+            ui_element_set_scale_xy((UIElement *) star_text, scale_value * LC_STAR_TEXT_SCALE, scale_value * LC_STAR_TEXT_SCALE);
 
             ui_image_set_tint(star, C2D_Color32f(1, 1, 1, opacity_value));
             star_text->base.opacity = opacity_value;
@@ -291,8 +305,13 @@ void level_complete_init() {
     ui_unload_screen(&screen);
     ui_unload_screen(&screen_top);
     
+#ifdef __PS2__
+    ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_complete_top_ps2.txt");
+    ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_complete_ps2.txt");
+#else
     ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_complete_top.txt");
     ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_complete.txt");
+#endif
 
     state.current_data.time_end = svcGetSystemTick() / (CPU_TICKS_PER_MSEC * 1000);
 
@@ -438,7 +457,7 @@ void level_complete_init() {
                 coin->base.enabled = true;
                 coin->base.opacity = 1.f;
                 
-                ui_element_set_scale((UIElement *) coin, 0.88f);
+                ui_element_set_scale((UIElement *) coin, LC_COIN_SCALE);
             }
         }
     }

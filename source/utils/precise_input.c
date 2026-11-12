@@ -86,8 +86,15 @@ void pi_reset(void) {
 }
 
 void pi_suppress_until_release(void) {
+#ifdef __PS2__
+    /* Suppress only a button/touch ALREADY held at the scene transition.
+     * An idle source should accept the first real press normally. */
+    pad.suppress_hold_until_release = pad.hold_state;
+    touch.suppress_hold_until_release = touch.hold_state;
+#else
     pad.suppress_hold_until_release = true;
     touch.suppress_hold_until_release = true;
+#endif
 }
 
 // poll to find the times that the clicks occured and schdule them for later application
@@ -271,7 +278,19 @@ static void apply_source(PreciseSource *src, u32 substep) {
 
         pop_event(src);
 
+#ifdef __PS2__
+        /* A new DOWN must not cancel suppression of the menu press.
+         * Release clears it, and only the next DOWN is a gameplay jump. */
+        if (src->suppress_hold_until_release) {
+            if (!pie.down) {
+                src->hold_state = false;
+                src->suppress_hold_until_release = false;
+            }
+            continue;
+        }
+#else
         src->suppress_hold_until_release = false;
+#endif
 
         if(pie.down){
             src->hold_state = true;

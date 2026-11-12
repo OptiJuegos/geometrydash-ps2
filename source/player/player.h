@@ -13,11 +13,13 @@ extern int frame_skipped;
 #define STEPS_DT ((1.f + frame_skipped) / STEPS_HZ) // 1/240 seconds per physics step
 #define STEPS_DT_UNMOD (1.f / STEPS_HZ) // 1/240 seconds per physics step
 
-#define P1_TRAIL_LENGTH 10
 #ifdef __PSP__
-// shorter, the copies close behind the icon like the phone game's
-#define P1_TRAIL_DURATION 0.2f
+// a copy every 1/40 s that lives 0.16 s: six copies a quarter of a block
+// apart, the last about a block and a half behind the icon
+#define P1_TRAIL_LENGTH 10
+#define P1_TRAIL_DURATION 0.16f
 #else
+#define P1_TRAIL_LENGTH 10
 #define P1_TRAIL_DURATION 0.45f
 #endif
 #define P1_TRAIL_END_SCALE 0.8f
@@ -66,6 +68,11 @@ typedef struct {
 
     bool upside_down;
     bool active;
+#if defined(__PSP__) || defined(__PS2__)
+    bool robot;         // a copy of the robot, posed as it was
+    u8 robot_anim;
+    float robot_anim_t;
+#endif
 } P1Trail;
 
 typedef struct {
@@ -106,7 +113,15 @@ typedef struct {
     InternalHitbox internal_hitbox;
 
     int gamemode;
-    
+
+#if defined(__PSP__) || defined(__PS2__)
+    // 2.0 robot: a cube (GAMEMODE_PLAYER) that jumps differently
+    bool robot;
+    float robot_boost; // seconds of held jump left
+    u8 robot_anim;     // ROBOT_ANIM_*, drawn by spawn_robot_at
+    float robot_anim_t;
+#endif
+
     int rotation_direction;
 
     bool on_ground;

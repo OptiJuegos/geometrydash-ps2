@@ -14,7 +14,7 @@
 #include "main_menu.h"
 #include "settings.h"
 
-#include "mp3_player.h"
+#include "music_player.h"
 #include "save/config.h"
 #include "state.h"
 #include "utils/gfx.h"
@@ -52,6 +52,9 @@ const char *category_names[] = {
 // Conditions
 
 bool condition_supports_wide() {
+#ifdef __PSP__
+    return false; // a 3DS screen mode: the option isn't listed
+#endif
     u8 model = get_model();
 
     return model != CFG_MODEL_2DS && !is_citra();
@@ -108,6 +111,16 @@ Setting settings[] = {
         .var = &settingsState.fps60,
         .key = CONFIG_GRAPHICS_PATH "fps60"
     },
+    {
+        .id = "showFps",
+        .label = "Show FPS",
+        .additionalInfo = "Shows the frame rate in the<p>top left corner.",
+        .page = PAGE_GRAPHICS,
+
+        .defaultValue = false,
+        .var = &settingsState.showFps,
+        .key = CONFIG_GRAPHICS_PATH "showFps"
+    },
 #endif
     {
         .id = "particlesDisabled",
@@ -131,8 +144,14 @@ Setting settings[] = {
     },
     {
         .id = "yButton",
+#ifdef __PSP__
+        // the 3DS's Y is the PSP's square
+        .label = "Square to jump",
+        .additionalInfo = "Swaps your jump input to Square.",
+#else
         .label = "Y to jump",
         .additionalInfo = "Swaps your jump input to Y.",
+#endif
         .page = PAGE_INPUT, 
 
         .defaultValue = false,
@@ -152,7 +171,11 @@ Setting settings[] = {
     {
         .id = "enableDebugBindings",
         .label = "Enable debug keys",
+#ifdef __PSP__
+        .additionalInfo = "Enables debug key shortcuts.<p>(Circle + L, Circle + R, Triangle)",
+#else
         .additionalInfo = "Enables debug key shortcuts.<p>(B + L, B + R, X)",
+#endif
         .page = PAGE_INPUT,
 
         .defaultValue = false,
@@ -409,7 +432,7 @@ void stereo_setting(bool checked) {
 void practiceMusicSync_setting(bool checked) {
     // Enable song
     if (state.practice_mode) {
-        stop_mp3();
+        stop_music();
         if (checked) {
             play_level_song(level_info.song_offset + state.player.timeElapsed);
         } else {

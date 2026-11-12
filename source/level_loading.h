@@ -68,6 +68,13 @@ typedef struct {
     int toRed;
     int toGreen;
     int toBlue;
+#if defined(__PSP__) || defined(__PS2__)
+    bool v2;                    // from a 2.0 color string: these are set
+    float opacity;              // 7
+    int copy_id;                // 9
+    float h, s, v;              // 10: "h a s a v a s_add a v_add"
+    bool s_add, v_add;
+#endif
 } GDColorChannel;
 
 
@@ -93,6 +100,9 @@ typedef struct {
     int background_id;
     int ground_id;
     int initial_gamemode;
+#if defined(__PSP__) || defined(__PS2__)
+    bool initial_robot;
+#endif
     bool initial_mini;
     unsigned char initial_speed;
     bool initial_dual;
@@ -127,6 +137,11 @@ bool obj_has_main(const GameObject *obj);
 bool obj_has_detail(const GameObject *obj);
 
 bool is_valid_object(int id);
+
+#if defined(__PSP__) || defined(__PS2__)
+// a teleport portal's (747) way out, the 749 made for it at load (-1: none)
+int teleport_exit(int obj);
+#endif
 
 char *get_level_name(char *data_ptr);
 char *load_user_song(int id, size_t *out_size); 

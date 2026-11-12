@@ -15,7 +15,7 @@
 #include "main.h"
 #include "easing.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "level_select.h"
 
@@ -23,6 +23,10 @@
 #include "save/saving.h"
 
 #include "menus/gameplay.h"
+#if defined(__PSP__) || defined(__PS2__)
+#include "menus/main_menu.h" // in_info_card
+#include "menus/info_card.h"
+#endif
 
 #include "state.h"
 
@@ -262,9 +266,10 @@ void update_level_name(int level, int card) {
 
     ui_label_set_text(e, main_levels[level].level_name);
 
-#ifdef __PSP__
+#if defined(__PSP__) || defined(__PS2__)
     // one screen: the difficulty face goes in the card, by the name, like the
-    // phone game (the 3DS has it on the other screen)
+    // phone game (the 3DS has it on the other screen). PS2 also keeps a
+    // hidden 3DS face for the unmodified top-screen update logic.
     UIImage *face = (UIImage *) ui_get_element_by_tag(&default_screen, card ? "card_face_2" : "card_face");
     if (face) ui_image_set_image(face, 239 + main_levels[level].difficulty, 0);
 #endif
@@ -448,11 +453,34 @@ void tint_ground(UIElement *e) {
     ui_image_set_tint((UIImage *) e, C2D_Color32(channel.color.r, channel.color.g, channel.color.b, 255));
 }
 
+#if defined(__PSP__) || defined(__PS2__)
+// the "i" button: the level's stats (as GD's Level Stats)
+static void action_level_info(UIElement *e) {
+    if (IS_SOON(curr_level_id) || in_info_card) return;
+    const LevelData *d = &main_level_data[curr_level_id];
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp),
+        "<#FFFF00>%s</>"
+        "<p><#40E048>Total Attempts</>: %d"
+        "<p><#5AB4FF>Total Jumps</>: %d"
+        "<p><#FF32FF>Normal</>: %d%%"
+        "<p><#FFA05A>Practice</>: %d%%",
+        main_levels[curr_level_id].level_name, d->attempts, d->jumps,
+        d->normal_progress, d->practice_progress);
+    info_card_init_layout("romfs:/menus/level_stats.txt");
+    set_info_content(tmp);
+    in_info_card = true;
+}
+#endif
+
 static UIAction actions[] = {
     {"open_level", action_open_level},
     {"exit", action_exit},
     {"move_right", action_move_right},
-    {"move_left", action_move_left}
+    {"move_left", action_move_left},
+#if defined(__PSP__) || defined(__PS2__)
+    {"level_info", action_level_info},
+#endif
 };
 
 static UIAction actions_top[] = {
@@ -466,8 +494,15 @@ void level_select_loop() {
     exit_flag = false;
     state.custom_level = false;
     dragDistance = 0;
+#ifdef __PS2__
+    /* The original 3DS layout is two screens; PS2 uses the centered classic
+     * mobile/PSP layout while retaining hidden 3DS statistics tags. */
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_select_ps2.txt");
+    ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/level_select_top_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/level_select.txt");
     ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/level_select_top.txt");
+#endif
 
     // Set window color
     level_card_window = (UIWindowButton *) ui_get_element_by_tag(&default_screen, "card_window");
@@ -538,7 +573,7 @@ void level_select_loop() {
     bg_gradient_top = (UIImage *) ui_get_element_by_tag(&default_screen_top, "gradient");
 
     if (!playing_menu_loop) {
-        play_mp3("romfs:/songs/menuLoop.mp3", true, 0);
+        play_music("romfs:/songs/menuLoop.mp3", true, 0);
         playing_menu_loop = true;
     }
 
@@ -649,8 +684,15 @@ void level_select_loop() {
 #ifdef __PSP__
         soon_refresh();
 #endif
+#if defined(__PSP__) || defined(__PS2__)
+        // the stats card takes the buttons while it is open
+        if (!in_info_card) {
+#endif
         ui_screen_update(&default_screen, &touch);
         ui_screen_update(&default_screen_top, &touch);
+#if defined(__PSP__) || defined(__PS2__)
+        }
+#endif
 #ifdef __PSP__
         // again: the arrows act during the update, and the frame drawn now
         // showed both a level and "Coming Soon!" on the card that came in
@@ -674,6 +716,9 @@ void level_select_loop() {
 #ifdef __PSP__
             draw_dots(curr_level_id);
 #endif
+#if defined(__PSP__) || defined(__PS2__)
+            if (in_info_card && info_card_loop()) in_info_card = false;
+#endif
 
             change_blending(true);
             draw_touch_effect();
@@ -693,7 +738,7 @@ void level_select_loop() {
         } while (handle_fading());
 
         if (start_level) {
-            stop_mp3();
+            stop_music();
             game_state = STATE_GAME;
             playing_menu_loop = false;
             break;

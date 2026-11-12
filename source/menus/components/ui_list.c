@@ -16,6 +16,9 @@
 #ifdef __PSP__
 #include "../../../psp/src/psp_port.h"
 #endif
+#ifdef __PS2__
+#include "../../../ps2/src/ps2_ui_nav.h"
+#endif
 
 void ui_list_reset(UIList *list) {
     if (!list) return;
@@ -63,6 +66,10 @@ static void ui_list_forward_touch(UIList *list, UIInput *input, UITransform *tra
     float hw = list->base.w * 0.5f * transform->scaleX, hh = list->base.h * 0.5f * transform->scaleY;
     psp_list_clip(transform->x - hw, transform->y - hh, transform->x + hw, transform->y + hh);
 #endif
+#ifdef __PS2__
+    float hw = list->base.w * 0.5f * transform->scaleX, hh = list->base.h * 0.5f * transform->scaleY;
+    PS2_NavListClip(transform->x - hw, transform->y - hh, transform->x + hw, transform->y + hh);
+#endif
 
     for (UIElement *item = list->base.first_child; item; item = item->next_sibling) {
         UITransform t = *transform;
@@ -81,6 +88,9 @@ static void ui_list_forward_touch(UIList *list, UIInput *input, UITransform *tra
 
 #ifdef __PSP__
     psp_list_clip_end();
+#endif
+#ifdef __PS2__
+    PS2_NavListClipEnd();
 #endif
 }
 

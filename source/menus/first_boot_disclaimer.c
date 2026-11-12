@@ -11,7 +11,7 @@
 #include "main.h"
 #include "easing.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "main_menu.h"
 #include "level_select.h"

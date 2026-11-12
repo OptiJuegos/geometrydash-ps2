@@ -63,8 +63,13 @@ static UIAction actions[] = {
 };
 
 void how_to_play_init() {
+#ifdef __PS2__
+    ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/how_to_play_ps2.txt");
+    ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/how_to_play_top_ps2.txt");
+#else
     ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/how_to_play.txt");
     ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/how_to_play_top.txt");
+#endif
 
     ui_screen_open(&screen, ANIM_ZOOM);
     ui_screen_open(&screen_top, ANIM_ZOOM);

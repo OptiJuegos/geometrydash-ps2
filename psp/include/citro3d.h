@@ -14,7 +14,9 @@ extern "C" {
 #ifndef M_TAU
 #define M_TAU (2 * M_PI)
 #endif
-#define C3D_AngleFromDegrees(_angle) ((_angle) * M_TAU / 360.0f)
+// float constant: M_TAU is a double, and the EE/Allegrex have no double FPU,
+// so the plain form was a software double multiply and divide per call
+#define C3D_AngleFromDegrees(_angle) ((_angle) * (float)(M_TAU / 360.0))
 
 #define C3D_DEFAULT_CMDBUF_SIZE 0x40000
 enum { C3D_FRAME_SYNCDRAW = BIT(0), C3D_FRAME_NONBLOCK = BIT(1) };

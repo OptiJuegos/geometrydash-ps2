@@ -89,7 +89,14 @@ static UIAction actions_top[] = {
 
 void loading_screen_init() {
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/loading_screen.txt");
+#ifdef __PS2__
+    /* PS2 composites both 3DS screens onto one GS surface. Use a dedicated
+     * top-only 4:3 layout rather than overlapping the original disclaimer
+     * screen with the logo/progress screen. */
+    ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/loading_screen_top_ps2.txt");
+#else
     ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/loading_screen_top.txt");
+#endif
 
     Color col;
     col.r = 0;
@@ -110,20 +117,26 @@ void loading_screen_init() {
     }
     
     progressbar = (UIProgressBar *) ui_get_element_by_tag(&default_screen_top, "loadprogress");
-    ui_progress_bar_set_tint(progressbar, C2D_Color32(50, 190, 240, 255));
-    progressbar->max_value = 100;
+    if (progressbar) {
+        ui_progress_bar_set_tint(progressbar, C2D_Color32(50, 190, 240, 255));
+        progressbar->max_value = 100;
+    }
 
     splashtext = (UILabel *) ui_get_element_by_tag(&default_screen_top, "splashtext");
     
+#ifdef __PS2__
+    /* Some randomized 3DS splash lines are wider than the PS2's visible
+     * 320 logical units; keep a short, readable loading caption. */
+    ui_label_set_text(splashtext, "Loading...");
+#else
     int text_index = random_int(0, ARRAY_LEN(splash_texts) - 1);
-
     char *text = splash_texts[text_index];
-
     ui_label_set_text(splashtext, text);
+#endif
 }
 
 void loading_screen_update(float progress) {    
-    progressbar->value = progress;
+    if (progressbar) progressbar->value = progress;
     UIInput touch;
     touchPosition touchPos;
     hidTouchRead(&touchPos);
@@ -137,14 +150,23 @@ void loading_screen_update(float progress) {
     // Top screen, drawn once per eye when 3D is on
     for (int eye = 0; begin_top_eye(eye); eye++) {
         begin_eye_layer(DEPTH_BACKGROUND);
+#if defined(__PSP__) || defined(__PS2__)
+        // the background's lighter, lower part, as in the main menu
+        draw_background(0, 200);
+#else
         draw_background(0, -30);
+#endif
         end_eye_layer();
 
         begin_eye_layer(DEPTH_UI);
         ui_screen_draw(&default_screen_top);
+#ifdef __PS2__
+        draw_fade();
+#endif
         end_eye_layer();
     }
 
+#ifndef __PS2__
     // Bottom Screen
     C2D_TargetClear(bot, C2D_Color32(0, 0, 0, 255));
     C2D_SceneBegin(bot);
@@ -156,5 +178,6 @@ void loading_screen_update(float progress) {
     C2D_ViewScale(1/SCALE, 1/SCALE);
     ui_screen_draw(&default_screen);
     C2D_ViewReset();
+#endif
     C3D_FrameEnd(0);
 }

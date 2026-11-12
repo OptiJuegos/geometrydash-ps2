@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __PS2__
+#include <errno.h>
+#endif
 
 static struct json_object* get_path_object(struct json_object* root, const char* path) {
     char buffer[256];
@@ -97,10 +100,23 @@ void config_save(Config* cfg) {
     );
 
     FILE* f = fopen(cfg->path, "w");
-    if (!f) return;
-
-    fputs(json, f);
-    fclose(f);
+    if (!f) {
+#ifdef __PS2__
+        printf("GDPS2 SAVE ERROR: cannot open %s for writing (errno=%d)\n",
+               cfg->path, errno);
+#endif
+        return;
+    }
+    int written = fputs(json, f);
+    int closed = fclose(f);
+#ifdef __PS2__
+    if (written == EOF || closed != 0)
+        printf("GDPS2 SAVE ERROR: incomplete write to %s (errno=%d)\n",
+               cfg->path, errno);
+#else
+    (void)written;
+    (void)closed;
+#endif
 }
 
 const char* config_get_string(Config* cfg, const char* path, const char* def) {

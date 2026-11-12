@@ -22,10 +22,18 @@ static UIAction actions[] = {
 };
 
 void online_level_infobox_init() {
+#ifdef __PS2__
+    ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_info_pop_up_ps2.txt");
+#else
     ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_info_pop_up.txt");
+#endif
     ui_screen_open(&screen, ANIM_ZOOM);
 
+#ifdef __PS2__
+    ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_info_pop_up_top_ps2.txt");
+#else
     ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/online_level_info_pop_up_top.txt");
+#endif
     ui_screen_open(&screen_top, ANIM_ZOOM);
 
     yes_exit = false;

@@ -20,6 +20,11 @@ psp/src/ndsp_psp.c).
 extern "C" {
 #endif
 
+#ifdef __PS2__
+// PS2SDK already defines u8/u16/u32/u64 and their volatile/signed forms.
+// Its u32 is unsigned int (newlib's uint32_t is unsigned long on this ABI).
+#include <tamtypes.h>
+#else
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -33,6 +38,7 @@ typedef volatile u16 vu16;
 typedef volatile u32 vu32;
 typedef volatile u64 vu64;
 typedef volatile s32 vs32;
+#endif
 typedef s32 Result;
 typedef u32 Handle;
 
@@ -48,8 +54,14 @@ typedef u32 Handle;
 
 // the game counts in 3DS ARM11 ticks; svcGetSystemTick scales the PSP clock
 #define SYSCLOCK_ARM11 268111856
+#ifdef __PS2__
+/* Frame deltas fit in float and the R5900 executes single precision in hardware. */
+#define CPU_TICKS_PER_MSEC (SYSCLOCK_ARM11 / 1000.0f)
+#define CPU_TICKS_PER_USEC (SYSCLOCK_ARM11 / 1000000.0f)
+#else
 #define CPU_TICKS_PER_MSEC (SYSCLOCK_ARM11 / 1000.0)
 #define CPU_TICKS_PER_USEC (SYSCLOCK_ARM11 / 1000000.0)
+#endif
 
 u64 svcGetSystemTick(void);
 void svcSleepThread(s64 ns);

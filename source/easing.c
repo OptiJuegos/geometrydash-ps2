@@ -1,11 +1,11 @@
 #include <math.h>
 #include "easing.h"
 
-#define M_PI 3.14159265358979323846
-#define M_PI_X2 (M_PI * 2)
+#define M_PI 3.14159265358979323846f
+#define M_PI_X2 (M_PI * 2.0f)
 
 #ifndef M_PI_2
-    #define M_PI_2 (M_PI / 2)
+    #define M_PI_2 (M_PI / 2.0f)
 #endif
 
 
@@ -436,7 +436,7 @@ float bounceEaseInOut(float time)
 
 float quadraticIn(float time)
 {
-    return powf(time, 2);
+    return time * time;
 }
 
 float quadraticOut(float time)

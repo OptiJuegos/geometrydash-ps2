@@ -11,6 +11,7 @@
 #include <stdlib.h>
 
 #include "state.h"
+#include "triggers_v2.h"
 
 Color p1_color;
 Color p2_color;
@@ -72,6 +73,14 @@ void init_col_channels() {
         channels[chan].blending = false;
         col_trigger_buffer[chan].active = false;
     }
+
+#if defined(__PSP__) || defined(__PS2__)
+    for (size_t chan = 0; chan < COL_CHANNEL_NUM; chan++) {
+        channels[chan].alpha = 255;
+        col_trigger_buffer[chan].new_alpha = 255;
+    }
+    copy_link_count = 0;
+#endif
 
     int bg = get_col_channel_index(CHANNEL_BG);
     channels[bg].color.r = 0;
@@ -148,6 +157,14 @@ void init_col_channels() {
     channels[invis_glow].color.g = 255;
     channels[invis_glow].color.b = 255;
     channels[invis_glow].blending = true;
+
+#if defined(__PSP__) || defined(__PS2__)
+    // white is already white, lighter is worked out per object (graphics.c)
+    int v2_black = get_col_channel_index(CHANNEL_V2_BLACK);
+    channels[v2_black].color.r = 0;
+    channels[v2_black].color.g = 0;
+    channels[v2_black].color.b = 0;
+#endif
 }
 
 void handle_col_channel(int chan) {
@@ -168,11 +185,29 @@ void handle_col_channel(int chan) {
 
         channels[channel].color = lerped_color;
 
+#if defined(__PSP__) || defined(__PS2__)
+        // the opacity too: the rest of the way, over the time that's left
+        float step = game_state == STATE_GAME ? delta : DT;
+        float left = buffer->seconds - buffer->time_run;
+        int a = channels[channel].alpha;
+        a += left > step ? (int)((buffer->new_alpha - a) * step / left) : buffer->new_alpha - a;
+        channels[channel].alpha = a;
+#endif
+
+#if defined(__PSP__) || defined(__PS2__)
+        // the frame's time while playing (30 fps took twice as long), the
+        // menus' fixed step else
+        buffer->time_run += game_state == STATE_GAME ? delta : DT;
+#else
         buffer->time_run += DT;
+#endif
 
         if (buffer->time_run > buffer->seconds) {
             buffer->active = false;
             channels[channel].color = color_to_lerp;
+#if defined(__PSP__) || defined(__PS2__)
+            channels[channel].alpha = buffer->new_alpha;
+#endif
         }
     }
 }
@@ -206,12 +241,31 @@ void upload_to_buffer(int obj, int channel) {
     if (channel < CHANNEL_BG) {
         channels[buffer_channel].blending = objects.blending[obj];
     }
-    
-    
+
+#if defined(__PSP__) || defined(__PS2__)
+    // 2.0: the opacity, and copying another channel
+    float t_opacity, t_h, t_s, t_v;
+    int t_copied;
+    bool t_s_add, t_v_add;
+    buffer->new_alpha = 255;
+    col_clear_copy(channel);
+    if (trig2_color_info(obj, &t_opacity, &t_copied, &t_h, &t_s, &t_v, &t_s_add, &t_v_add)) {
+        buffer->new_alpha = (u8)(CLAMP(t_opacity, 0.f, 1.f) * 255);
+        if (t_copied > 0) {
+            int src = v2_channel(t_copied);
+            buffer->new_color = col_apply_hsv(channels[get_col_channel_index(src)].color, t_h, t_s, t_v, t_s_add, t_v_add);
+            col_set_copy(channel, src, t_h, t_s, t_v, t_s_add, t_v_add);
+        }
+    }
+#endif
+
     if (objects.trig_duration[obj] == 0) {
         Color color_to_lerp = buffer->new_color;
 
         channels[buffer_channel].color = color_to_lerp;
+#if defined(__PSP__) || defined(__PS2__)
+        channels[buffer_channel].alpha = buffer->new_alpha;
+#endif
         return;
     }
     
@@ -326,9 +380,17 @@ void run_trigger(int obj) {
             break;
 
         case COL_TRIGGER: // 2.0 color trigger
+#if defined(__PSP__) || defined(__PS2__)
+            upload_to_buffer(obj, v2_channel(objects.target_color_id[obj]));
+#else
             upload_to_buffer(obj, objects.target_color_id[obj]);
+#endif
             break;
         default:
+#if defined(__PSP__) || defined(__PS2__)
+            // move, alpha, toggle, spawn, pulse (triggers_v2.c)
+            if (trig2_run(obj)) break;
+#endif
             return;
     }
     SET_ACTIVATED(obj, true);
@@ -354,6 +416,41 @@ int compare_triggers(const void *a, const void *b) {
 int triggers_buffer[TRIGGER_BUFFER_SIZE];
 int trigger_count;
 
+#if defined(__PSP__) || defined(__PS2__)
+// run_trigger does something only for these: the sections hold every
+// object, and the blocks behind the player were queued and sorted each frame
+static bool runs_as_trigger(int obj) {
+    switch (objects.id[obj]) {
+        case TRIGGER_FADE_NONE:
+        case TRIGGER_FADE_UP:
+        case TRIGGER_FADE_DOWN:
+        case TRIGGER_FADE_RIGHT:
+        case TRIGGER_FADE_LEFT:
+        case TRIGGER_FADE_SCALE_IN:
+        case TRIGGER_FADE_SCALE_OUT:
+        case TRIGGER_FADE_INWARDS:
+        case TRIGGER_FADE_OUTWARDS:
+        case TRIGGER_FADE_LEFT_SEMICIRCLE:
+        case TRIGGER_FADE_RIGHT_SEMICIRCLE:
+        case BG_TRIGGER:
+        case GROUND_TRIGGER:
+        case LINE_TRIGGER:
+        case V2_0_LINE_TRIGGER:
+        case OBJ_TRIGGER:
+        case OBJ_2_TRIGGER:
+        case COL2_TRIGGER:
+        case COL3_TRIGGER:
+        case COL4_TRIGGER:
+        case THREEDL_TRIGGER:
+        case ENABLE_TRAIL:
+        case DISABLE_TRAIL:
+        case COL_TRIGGER:
+            return true;
+    }
+    return trig2_is_trigger(obj);
+}
+#endif
+
 void handle_triggers() {
     trigger_count = 0;
     int cam_sx = (int)((state.player.x) / SECTION_SIZE);
@@ -367,7 +464,13 @@ void handle_triggers() {
             Section *sec = get_section(sec_x, sec_y);
             for (int i = 0; i < sec->object_count; i++) {
                 int obj = sec->objects[i];
-                
+
+#if defined(__PSP__) || defined(__PS2__)
+                // a group turned off has its triggers off too; some run
+                // only when a spawn trigger starts them
+                if (!runs_as_trigger(obj) || objects.toggled[obj] || trig2_spawn_only(obj)) continue;
+#endif
+
                 if (!GET_ACTIVATED(obj)) {
                     if (objects.touch_triggered[obj]) {
                         // Try p1
@@ -439,3 +542,105 @@ void calculate_lbg() {
     channels[chan_lbg].color.b = b;
     channels[chan_lbg].blending = true;
 }
+
+#if defined(__PSP__) || defined(__PS2__)
+CopyLink copy_links[MAX_COPY_LINKS];
+int copy_link_count;
+
+// the normal channels a level uses are 1 up to this (not included)
+static int col_used_end = COL_4 + 1;
+
+void col_reset_used(void) {
+    col_used_end = COL_4 + 1;
+}
+
+void col_note_used(int ch) {
+    if (ch > 0 && ch < CHANNEL_NORMAL_END && ch + 1 > col_used_end) col_used_end = ch + 1;
+}
+
+// a checkpoint's channels: the used normal ones and the special ones
+typedef struct {
+    int n;
+    // n normal, then the special ones: channels, then their buffers
+} ColSnapHead;
+
+#define COL_SPECIAL_COUNT (COL_CHANNEL_NUM - CHANNEL_NORMAL_END)
+
+void *col_snapshot_save(void *old) {
+    int n = col_used_end;
+    int total = n + COL_SPECIAL_COUNT;
+    ColSnapHead *h = realloc(old, sizeof(ColSnapHead) + total * (sizeof(ColorChannel) + sizeof(ColTriggerBuffer)));
+    if (!h) {
+        free(old);
+        return NULL;
+    }
+    h->n = n;
+    ColorChannel *c = (ColorChannel *)(h + 1);
+    ColTriggerBuffer *b = (ColTriggerBuffer *)(c + total);
+    memcpy(c, channels, sizeof(ColorChannel) * n);
+    memcpy(c + n, channels + CHANNEL_NORMAL_END, sizeof(ColorChannel) * COL_SPECIAL_COUNT);
+    memcpy(b, col_trigger_buffer, sizeof(ColTriggerBuffer) * n);
+    memcpy(b + n, col_trigger_buffer + CHANNEL_NORMAL_END, sizeof(ColTriggerBuffer) * COL_SPECIAL_COUNT);
+    return h;
+}
+
+void col_snapshot_restore(const void *snap) {
+    if (!snap) return;
+    const ColSnapHead *h = snap;
+    int n = h->n;
+    int total = n + COL_SPECIAL_COUNT;
+    const ColorChannel *c = (const ColorChannel *)(h + 1);
+    const ColTriggerBuffer *b = (const ColTriggerBuffer *)(c + total);
+    memcpy(channels, c, sizeof(ColorChannel) * n);
+    memcpy(channels + CHANNEL_NORMAL_END, c + n, sizeof(ColorChannel) * COL_SPECIAL_COUNT);
+    memcpy(col_trigger_buffer, b, sizeof(ColTriggerBuffer) * n);
+    memcpy(col_trigger_buffer + CHANNEL_NORMAL_END, b + n, sizeof(ColTriggerBuffer) * COL_SPECIAL_COUNT);
+}
+
+// hue in degrees, like GD's
+Color col_apply_hsv(Color c, float hue, float sat, float val, bool s_add, bool v_add) {
+    float h, s, v;
+    convertRGBtoHSV(c.r, c.g, c.b, &h, &s, &v);
+    h += hue; // degrees, both
+    while (h < 0) h += 360;
+    while (h >= 360) h -= 360;
+    s = s_add ? s + sat : s * sat;
+    v = v_add ? v + val : v * val;
+    s = clampf(s, 0.f, 1.f);
+    v = clampf(v, 0.f, 1.f);
+    Color out;
+    convertHSVtoRGB(h, s, v, &out.r, &out.g, &out.b);
+    return out;
+}
+
+void col_clear_copy(int ch) {
+    for (int i = 0; i < copy_link_count; i++) {
+        if (copy_links[i].ch == ch) {
+            copy_links[i] = copy_links[--copy_link_count];
+            return;
+        }
+    }
+}
+
+void col_set_copy(int ch, int src, float h, float s, float v, bool s_add, bool v_add) {
+    col_clear_copy(ch);
+    col_note_used(ch);
+    col_note_used(src);
+    if (src == ch || copy_link_count >= MAX_COPY_LINKS) return;
+    copy_links[copy_link_count++] = (CopyLink){ ch, src, s_add, v_add, h, s, v };
+}
+
+// every frame: copies follow their source (twice, for copies of copies),
+// but not while a color trigger is fading the channel
+void col_apply_copies(void) {
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < copy_link_count; i++) {
+            const CopyLink *l = &copy_links[i];
+            int idx = get_col_channel_index(l->ch);
+            if (col_trigger_buffer[idx].active) continue;
+            Color src = channels[get_col_channel_index(l->src)].color;
+            channels[idx].color = col_apply_hsv(src, l->h, l->s, l->v, l->s_add, l->v_add);
+        }
+    }
+}
+#endif

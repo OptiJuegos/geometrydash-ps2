@@ -13,7 +13,7 @@
 
 #include "main.h"
 
-#include "mp3_player.h"
+#include "music_player.h"
 #include "menus/settings.h"
 #include "utils/gfx.h"
 
@@ -109,7 +109,7 @@ float player_get_vel(Player *player, float vel) {
 
 void set_p_velocity(Player *player, float vel, bool override) {
     player->velocity_override = override;
-    player->vel_y = vel * ((player->mini) ? 0.8 : 1);
+    player->vel_y = vel * ((player->mini) ? 0.8f : 1.0f);
 }
 
 void update_rotation_direction(Player *player) {
@@ -151,8 +151,50 @@ void cube_gamemode(Player *player) {
         player->cube_target_rotation = player->rotation;
     }
 
+#if defined(__PSP__) || defined(__PS2__)
+    // Robot (as wiidash does it): rises at a constant speed while the jump is
+    // held, up to 1.5 / 5.4 s; the rest of the time it falls at 0.9 gravity
+    if (player->robot) {
+        if (player->robot_boost > 0 && state.input.holdJump && !player->on_ground) {
+            player->gravity = 0;
+            player->robot_boost -= STEPS_DT;
+        } else {
+            player->robot_boost = 0;
+            player->gravity = -2794.1082f * 0.9f;
+            // the rise is over: falling
+            if (player->robot_anim == ROBOT_ANIM_JUMP) {
+                player->robot_anim = ROBOT_ANIM_FALL_START;
+                player->robot_anim_t = 0;
+            }
+        }
+
+        // the fire under its feet while it rises (wiidash: ROBOT_JUMP_PARTICLES),
+        // the ship's fire
+        bool rising = player->robot_boost > 0 && state.input.holdJump && !player->on_ground;
+        ParticleSystem *fire = &ship_fire_particles[state.current_player];
+        fire->emitterX = player->x - player->width / 2 + 5 * (player->mini ? 0.6f : 1.f);
+        fire->emitterY = fabsf(gravBottom(player)) + (player->upside_down ? -2 : 2);
+        fire->emitting = rising;
+        fire->gravityFlipped = player->upside_down;
+        fire->scale = (player->mini ? 0.6f : 1.0f);
+
+        // its animation (wiidash's): running on the ground; off it without
+        // a jump (a pad, an orb, an edge), up or down
+        player->robot_anim_t += STEPS_DT;
+        if (player->on_ground) {
+            player->robot_anim = ROBOT_ANIM_RUN;
+        } else if (player->robot_anim == ROBOT_ANIM_RUN) {
+            player->robot_anim = player->vel_y * (player->upside_down ? -1 : 1) > 0 ? ROBOT_ANIM_JUMP_START : ROBOT_ANIM_FALL_START;
+            player->robot_anim_t = 0;
+        }
+    }
+
+    // Do cube rotation (the robot doesn't spin)
+    if (player->slope_data.slope_id < 0 && !player->on_ground && !player->robot) {
+#else
     // Do cube rotation
     if (player->slope_data.slope_id < 0 && !player->on_ground) {
+#endif
         if (player->inverse_rotation) {
             player->cube_target_rotation -= (cube_rotation_speed[player->mini] / 2) * STEPS_DT * mult;
         } else {
@@ -208,6 +250,15 @@ void cube_gamemode(Player *player) {
             // Normal jump
             set_p_velocity(player, cube_jump_heights[state.speed], state.old_input.holdJump);
         }
+#if defined(__PSP__) || defined(__PS2__)
+        if (player->robot) {
+            player->vel_y *= 0.5f;
+            player->robot_boost = 1.5f / 5.4f;
+            player->gravity = 0;
+            player->robot_anim = ROBOT_ANIM_JUMP_START;
+            player->robot_anim_t = 0;
+        }
+#endif
         player->inverse_rotation = false;
         player->buffering_state = BUFFER_END;
     
@@ -811,6 +862,9 @@ void handle_player(Player *player) {
     // The svc calls are for profiling
     u64 start = svcGetSystemTick();
     collide_with_objects(player);
+#if defined(__PSP__) || defined(__PS2__)
+    apply_pending_teleport(player);
+#endif
     u64 end = svcGetSystemTick();
     u64 ticks = end - start;
     collision_time += ticks / CPU_TICKS_PER_MSEC;
@@ -921,8 +975,23 @@ void spawn_p1_trail(Player *player, int player_id) {
 
     trail_data->delta_scale = (end_scale - trail_data->scale) / P1_TRAIL_DURATION;
     
+#if defined(__PSP__) || defined(__PS2__)
+    trail_data->robot = player->robot && player->gamemode == GAMEMODE_PLAYER;
+    trail_data->robot_anim = player->robot_anim;
+    trail_data->robot_anim_t = player->robot_anim_t;
+    if (trail_data->robot) trail_data->upside_down = player->upside_down;
+#endif
     trail_data->x = player->x;
     trail_data->y = player->y;
+#if defined(__PSP__) || defined(__PS2__)
+    // ship and ufo: the copy is of the cube riding them, where draw_player puts it
+    if (player->gamemode == GAMEMODE_SHIP || player->gamemode == GAMEMODE_BIRD) {
+        float r = C3D_AngleFromDegrees(player->rotation);
+        float up = ((player->gamemode == GAMEMODE_SHIP) ? 6 : 4) * (player->upside_down ? -1 : 1) * scale;
+        trail_data->x += up * sinf(r);
+        trail_data->y += up * cosf(r);
+    }
+#endif
     trail_data->rot = player->rotation;
     trail_data->opacity = 0.7f;
     trail_data->life = P1_TRAIL_DURATION;
@@ -940,10 +1009,10 @@ void update_p1_trail(Player *player, int player_id) {
     // Every 2/60 s rather than every 3 frames: at 30 fps (the PSP's default)
     // the copies came twice as far apart. Each one where the player was at
     // that moment, between this frame and the last, so they stay evenly spaced
-    #define P1_TRAIL_EVERY (2.f / 60.f)
+    #define P1_TRAIL_EVERY (1.f / 40.f)
     static float since_spawn[2], last_x[2], last_y[2];
     since_spawn[player_id] += delta;
-    if (since_spawn[player_id] > 2 * P1_TRAIL_EVERY) since_spawn[player_id] = P1_TRAIL_EVERY;
+    if (since_spawn[player_id] > 3 * P1_TRAIL_EVERY) since_spawn[player_id] = P1_TRAIL_EVERY;
     while (since_spawn[player_id] >= P1_TRAIL_EVERY) {
         since_spawn[player_id] -= P1_TRAIL_EVERY;
         if (state.dead || !p1_trail || !(player_id == 0 || state.dual)) continue;
@@ -975,7 +1044,13 @@ void update_p1_trail(Player *player, int player_id) {
         P1Trail *trail_data = &state.p1_trail_data[player_id][i];
 
         if (trail_data->active) {
+#if defined(__PSP__) || defined(__PS2__)
+            // from 0.7 down to 0 over its life (not below: it wraps around)
+            trail_data->opacity -= (0.7f / P1_TRAIL_DURATION) * delta;
+            if (trail_data->opacity < 0) trail_data->opacity = 0;
+#else
             trail_data->opacity -= (0.8f / P1_TRAIL_DURATION) * delta;
+#endif
             trail_data->scale += trail_data->delta_scale * delta;
 
             trail_data->life -= delta;
@@ -997,6 +1072,17 @@ void draw_p1_trail(Player *player, int player_id) {
             bool flip_x = (state.mirror_mult < 0);
 
             u32 color = (player_id == 1) ? C2D_Color32(p2_color.r, p2_color.g, p2_color.b, trail_data->opacity * 255) : C2D_Color32(p1_color.r, p1_color.g, p1_color.b, trail_data->opacity * 255);
+
+#if defined(__PSP__) || defined(__PS2__)
+            if (trail_data->robot) {
+                // the robot's copy: its main color parts, in the pose it had
+                u8 anim = trail_data->robot_anim;
+                spawn_robot_at(get_mirror_x(calc_x, state.mirror_factor), calc_y, 0,
+                               flip_x, trail_data->upside_down, trail_data->scale,
+                               color, 0, &anim, trail_data->robot_anim_t);
+                continue;
+            }
+#endif
 
             spawn_p1_layer_at(
                 trail_data->gamemode, *current_icons[trail_data->gamemode], 
@@ -1071,7 +1157,15 @@ void draw_player(Player *player) {
 
     switch (player->gamemode) {
         case GAMEMODE_PLAYER:
-            spawn_icon_at(GAMEMODE_PLAYER, selected_cube, glow_enabled, calc_x_mirror, calc_y, p_rot, flip_x, false, scale, 
+#if defined(__PSP__) || defined(__PS2__)
+            if (player->robot) {
+                // always upright (the cube's turns are 90 degree steps)
+                spawn_robot_at(calc_x_mirror, calc_y, 0, flip_x, player->upside_down, scale,
+                               primary_color, secondary_color, &player->robot_anim, player->robot_anim_t);
+                break;
+            }
+#endif
+            spawn_icon_at(GAMEMODE_PLAYER, selected_cube, glow_enabled, calc_x_mirror, calc_y, p_rot, flip_x, false, scale,
                 primary_color,
                 secondary_color,
                 C2D_Color32(glow_color.r, glow_color.g, glow_color.b, 255)

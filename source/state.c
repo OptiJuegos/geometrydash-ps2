@@ -3,7 +3,7 @@
 #include "main.h"
 #include "math_helpers.h"
 #include "player/slope.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "player/collision.h"
 #include "particles/circles.h"
 #include "particles/particles.h"
@@ -124,15 +124,18 @@ void run_camera() {
 
 void set_hitbox_size(Player *player, int gamemode) {
     float scale = (player->mini) ? 0.6f : 1.f;
+    // Whole units: 30 * 0.6f is a hair above 18 and the PS2's FPU can land it
+    // a hair below, so a mini player held at the ceiling bound (y + h/2 just
+    // under ceiling_y) never counted as touching it and the ball couldn't flip
     if (gamemode != GAMEMODE_DART) {
-        player->height = 30 * scale;
-        player->width = 30 * scale;
+        player->height = roundf(30 * scale);
+        player->width = roundf(30 * scale);
         
         player->internal_hitbox.width = 9;
         player->internal_hitbox.height = 9;
     } else {
-        player->height = 10 * scale;
-        player->width = 10 * scale;
+        player->height = roundf(10 * scale);
+        player->width = roundf(10 * scale);
 
         player->internal_hitbox.width = 3;
         player->internal_hitbox.height = 3;
@@ -146,6 +149,9 @@ void set_intended_ceiling() {
 
 void set_gamemode(Player *player, int gamemode) {
     player->gamemode = gamemode;
+#if defined(__PSP__) || defined(__PS2__)
+    player->robot = false; // the robot portal sets it again after this
+#endif
     set_hitbox_size(player, gamemode);
 }
 
@@ -176,6 +182,9 @@ void init_player(Player *player) {
     memset(player, 0, sizeof(Player));
     
     set_gamemode(player, level_info.initial_gamemode);
+#if defined(__PSP__) || defined(__PS2__)
+    player->robot = level_info.initial_robot;
+#endif
     set_mini(player, level_info.initial_mini);
 
     player->player_icons.cube = selected_cube;
@@ -385,10 +394,10 @@ void handle_death(Player *player, bool pause_song) {
     play_sfx(&explode_sound, 1);
     if (song_loaded && pause_song) {
         if (!state.practice_mode) {
-            pause_playback_mp3();
-            seek_mp3(level_info.song_offset);
+            pause_playback_music();
+            seek_music(level_info.song_offset);
         } else if (settingsState.practiceMusicSync) {
-            pause_playback_mp3();
+            pause_playback_music();
         }
     }
 
@@ -401,13 +410,13 @@ void handle_death(Player *player, bool pause_song) {
         effect->def.colorG = color_not_white.g / 255.f;
         effect->def.colorB = color_not_white.b / 255.f;
 
-        effect->def.end_rad *= (player->mini ? 0.6 : 1.0f);
-        effect->def.start_rad *= (player->mini ? 0.6 : 1.0f);
+        effect->def.end_rad *= (player->mini ? 0.6f : 1.0f);
+        effect->def.start_rad *= (player->mini ? 0.6f : 1.0f);
     }
 
     explosion_particles[state.current_player].emitterX = player->x;
     explosion_particles[state.current_player].emitterY = player->y;
-    explosion_particles[state.current_player].scale = (player->mini ? 0.6 : 1.0f);
+    explosion_particles[state.current_player].scale = (player->mini ? 0.6f : 1.0f);
     spawnMultipleParticles(&explosion_particles[state.current_player], 90);
     
     if (settingsState.hitboxesOnDeath) {
@@ -468,26 +477,57 @@ void clear_bg_flash() {
     state.flash_data.use_lbg = false;
 }
 
+#if defined(__PSP__) || defined(__PS2__)
+// GD's official songs after the main levels' (2.0 and later): the mp3s come
+// from the player's own GD (Makefile.psp copies them when it has its files)
+// (Geometrical Dominator, 18, and Deadlocked, 19, are main levels now)
+static const char *extra_official_songs[] = {
+    "romfs:/songs/Fingerdash.mp3",           // 20
+    "romfs:/songs/Dash.mp3",                 // 21
+};
+
+const char *official_song_name(int id) {
+    static const char *names[] = { "Fingerdash", "Dash" };
+    if (id >= 0 && id < MAIN_LEVELS_NUM) return main_levels[id].level_name;
+    id -= MAIN_LEVELS_NUM;
+    if (id >= 0 && id < (int)ARRAY_LEN(names)) return names[id];
+    return NULL;
+}
+
+// a level's official song by its number; out of range read past the main
+// levels' table (a crash), now Stereo Madness's
+static char *official_song_path(int id) {
+    if (id >= 0 && id < MAIN_LEVELS_NUM) return main_levels[id].song_path;
+    id -= MAIN_LEVELS_NUM;
+    if (id >= 0 && id < (int)ARRAY_LEN(extra_official_songs)) return (char *)extra_official_songs[id];
+    return main_levels[0].song_path;
+}
+#endif
+
 void play_level_song(float seek) {
     if (level_info.custom_song_id > 0) {
         size_t sz = 0;
         void *buf = load_user_song(level_info.custom_song_id, &sz);
         if (buf) {
-            song_loaded = play_mp3_buf(buf, sz, false, seek);
+            song_loaded = play_music_buf(buf, sz, false, seek);
         } else {
             song_loaded = false;
         }
     } else {
         if (state.custom_level) {
-            song_loaded = play_mp3(main_levels[level_info.song_id].song_path, false, seek);
+#if defined(__PSP__) || defined(__PS2__)
+            song_loaded = play_music(official_song_path(level_info.song_id), false, seek);
+#else
+            song_loaded = play_music(main_levels[level_info.song_id].song_path, false, seek);
+#endif
         } else {
-            song_loaded = play_mp3(main_levels[curr_level_id].song_path, false, seek);
+            song_loaded = play_music(main_levels[curr_level_id].song_path, false, seek);
         }
     }
 }
 
 void play_practice_song() {
-    play_mp3("romfs:/songs/StayInsideMe.mp3", true, 0);
+    play_music("romfs:/songs/StayInsideMe.mp3", true, 0);
 }
 
 // Respawn effect

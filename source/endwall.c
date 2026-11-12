@@ -2,7 +2,7 @@
 #include "main.h"
 #include "state.h"
 #include "math_helpers.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "utils/gfx.h"
 #include "wav_player.h"
 #include "particles/circles.h"
@@ -215,7 +215,7 @@ int handle_wall_cutscene(float delta) {
             }
             // Exiting
             if (status == 1) {
-                stop_mp3();
+                stop_music();
                 set_fade_status(FADE_STATUS_OUT);
             } else if (status == 2) { // Restarting
                 level_data_sel->attempts += state.current_data.attempts;
@@ -228,13 +228,13 @@ int handle_wall_cutscene(float delta) {
                 reload_level(); 
                 if (state.practice_mode) {
                     clear_practice_mode();
-                    stop_mp3();
+                    stop_music();
                     play_level_song(level_info.song_offset);
                 } else {
-                    if (song_loaded) seek_mp3(level_info.song_offset);
+                    if (song_loaded) seek_music(level_info.song_offset);
                 }
 
-                unpause_playback_mp3();
+                unpause_playback_music();
             }
             level_complete_initialized = false;
             completion_timer = 0.0f;

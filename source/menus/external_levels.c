@@ -16,7 +16,7 @@
 #include "main.h"
 #include "easing.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 #include "main_menu.h"
 #include "level_select.h"
@@ -30,6 +30,9 @@
 #include "save/config.h"
 #include "utils/folders.h"
 #include "level_loading.h"
+#ifdef __PS2__
+#include "../../ps2/src/ps2_aspect.h"
+#endif
 
 #include "menus/external_popup.h"
 #include "menus/info_card.h"
@@ -242,7 +245,11 @@ void external_levels_loop() {
     C2D_Fade(0);
     for (int eye = 0; begin_top_eye(eye); eye++) {
         begin_eye_layer(DEPTH_UI);
-#ifdef __PSP__
+#ifdef __PS2__
+        draw_text(&bigFont_fontCharset, &bigFont_sheet,
+                  GDPS2_CROP_X + GDPS2_VISIBLE_W - 12, SCREEN_HEIGHT - 10,
+                  0.5f, 0.5f, 1.0f, true, "Loading...");
+#elif defined(__PSP__)
         // the PSP cuts 8 lines off the top screen's bottom (480x272)
         draw_text(&bigFont_fontCharset, &bigFont_sheet, SCREEN_WIDTH - 14, SCREEN_HEIGHT - 22, 0.5f, 0.5f, 1.0f, true, "Loading...");
 #else
@@ -255,9 +262,17 @@ void external_levels_loop() {
     external_start_level = false;
     exit_flag = false;
     if (first_time_loaded) {
+#ifdef __PS2__
+        ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_levels_ps2.txt");
+#else
         ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_levels.txt");
+#endif
         bg_gradient = (UIImage *) ui_get_element_by_tag(&screen, "gradient");
+#ifdef __PS2__
+        ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_levels_top_ps2.txt");
+#else
         ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_levels_top.txt");
+#endif
         bg_gradient_top = (UIImage *) ui_get_element_by_tag(&screen_top, "gradient_top");
         list = (UIList *) ui_get_element_by_tag(&screen, "list");
         first_time_loaded = false;
@@ -275,7 +290,7 @@ void external_levels_loop() {
     set_fade_status(FADE_STATUS_IN);
 
     if (!playing_menu_loop) {
-        play_mp3("romfs:/songs/menuLoop.mp3", true, 0);
+        play_music("romfs:/songs/menuLoop.mp3", true, 0);
         playing_menu_loop = true;
     }
 
@@ -359,7 +374,7 @@ void external_levels_loop() {
         } while (handle_fading());
 
         if (external_start_level) {
-            stop_mp3();
+            stop_music();
             game_state = STATE_GAME;
             playing_menu_loop = false;
             break;

@@ -546,8 +546,8 @@ void custom_ellipse(float x, float y, float radiusX,
     if (filled) {
         // Triangle fan style (center -> edge points)
         for (int i = 0; i < segments; i++) {
-            float angle1 = i * 2.0f * M_PI / segments;
-            float angle2 = (i + 1) * 2.0f * M_PI / segments;
+            float angle1 = i * 2.0f * (float)M_PI / segments;
+            float angle2 = (i + 1) * 2.0f * (float)M_PI / segments;
 
             float x1 = cosf(angle1) * radiusX + x;
             float y1 = sinf(angle1) * radiusY + y;
@@ -566,7 +566,7 @@ void custom_ellipse(float x, float y, float radiusX,
     } else {
         // Outline using lines
         for (int i = 1; i <= segments; i++) {
-            float angle = i * 2.0f * M_PI / segments;
+            float angle = i * 2.0f * (float)M_PI / segments;
 
             float currX = cosf(angle) * radiusX + x;
             float currY = sinf(angle) * radiusY + y;

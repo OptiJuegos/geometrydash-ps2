@@ -7,7 +7,7 @@ Media Engine (sceAudiocodec) decodes one MP3 frame per call instead; this
 file finds the frames itself (their headers give their sizes), which also
 makes seeking a lookup.
 
-One stream at a time (the music). The song is in memory (mp3_player.c reads
+One stream at a time (the music). The song is in memory (music_player.c reads
 it whole), the PCM always comes out stereo 16 bit.
 */
 #include <pspkernel.h>

@@ -16,6 +16,9 @@
 
 #include "save/saving.h"
 #include "utils/json_config.h"
+#ifdef __PS2__
+#include "romfs_paths.h"
+#endif
 
 Config cfg;
 
@@ -82,6 +85,9 @@ void init_values() {
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "ufo",  1);
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "wave", 1);
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "trail", 0);
+#if defined(__PSP__) || defined(__PS2__)
+    config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "robot", 1);
+#endif
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p1",   DEFAULT_P1);
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p2",   DEFAULT_P2);
     config_init_int(&cfg, CONFIG_CUSTOMIZATION_PATH "glow", DEFAULT_GLOW);
@@ -101,6 +107,11 @@ void init_values() {
 }
 
 void cfg_init() {
+#ifdef __PS2__
+    /* SIO2/pad is ready by now, select Memory Card or existing host save
+     * before any mkdir/read/write of the original virtual SD paths. */
+    PS2_SaveInit();
+#endif
     // Make the directories
     mkdir(CONFIG_PARENT, 0777);
     mkdir(CONFIG_ROOT, 0777);
@@ -126,7 +137,11 @@ void cfg_init() {
     selected_ufo  = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "ufo",  1);
     selected_wave = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "wave", 1);
     selected_trail = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "trail", 0);
-    selected_p1   = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p1",   DEFAULT_P1);
+#if defined(__PSP__) || defined(__PS2__)
+    selected_robot = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "robot", 1);
+    if (selected_robot < 1 || selected_robot > ROBOT_COUNT) selected_robot = 1;
+#endif
+    selected_p1  = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p1",   DEFAULT_P1);
     selected_p2   = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p2",   DEFAULT_P2);
     selected_glow = config_get_int(&cfg, CONFIG_CUSTOMIZATION_PATH "glow", DEFAULT_GLOW);
     player_glow_enabled = config_get_bool(&cfg, CONFIG_CUSTOMIZATION_PATH "playerGlowEnabled", false);
@@ -143,7 +158,11 @@ void cfg_init() {
     normal_song_id_selected      = config_get_int(&cfg, CONFIG_FILTERS_PATH "normalId", 0);
     strncpy(custom_song_id, config_get_string(&cfg, CONFIG_FILTERS_PATH "songId", ""), sizeof(custom_song_id) - 1);
 
+#ifndef __PS2__
+    /* Do not rewrite a Memory Card at every boot just to load defaults.
+     * Settings are persisted by cfg_save() when the user changes them. */
     config_save(&cfg);
+#endif
 }
 
 void cfg_save() {
@@ -160,6 +179,9 @@ void cfg_save() {
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "ufo",  selected_ufo );
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "wave", selected_wave);
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "trail", selected_trail);
+#if defined(__PSP__) || defined(__PS2__)
+    config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "robot", selected_robot);
+#endif
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p1",   selected_p1  );
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "p2",   selected_p2  );
     config_set_int(&cfg, CONFIG_CUSTOMIZATION_PATH "glow", selected_glow);

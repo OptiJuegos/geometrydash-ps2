@@ -69,6 +69,13 @@ bool load_wav(const char* path, SFX* sfx) {
 }
 
 void play_sfx(SFX* sfx, int channel) {
+#ifdef __PS2__
+    static unsigned ps2_sfx_log_count;
+    if (ps2_sfx_log_count++ < 12)
+        printf("GDPS2 SFX: channel=%d rate=%lu channels=%u samples=%lu valid=%d\n",
+               channel, (unsigned long)sfx->sampleRate, (unsigned)sfx->channels,
+               (unsigned long)sfx->sampleCount, sfx->data != NULL);
+#endif
     ndspChnReset(channel);
 
     ndspChnSetInterp(channel, NDSP_INTERP_POLYPHASE);

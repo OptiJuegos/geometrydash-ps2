@@ -261,9 +261,14 @@ static void set_song_id(char *gmd) {
         }
     } else {
         char *song_name = "Unknown";
+#if defined(__PSP__) || defined(__PS2__)
+        extern const char *official_song_name(int id);
+        if (official_song_name(song_id)) song_name = (char *)official_song_name(song_id);
+#else
         if (song_id < MAIN_LEVELS_NUM) {
             song_name = main_levels[song_id].level_name;
         }
+#endif
         snprintf(tmp, sizeof(tmp), "Using song: %s", song_name);
     }
 
@@ -293,8 +298,13 @@ void external_popup_enter_from_level() {
 }
 
 void external_popup_init() {
+#ifdef __PS2__
+    ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_pop_up_ps2.txt");
+    ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_pop_up_top_ps2.txt");
+#else
     ui_load_screen(&screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_pop_up.txt");
     ui_load_screen(&screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/external_pop_up_top.txt");
+#endif
 
     ui_screen_open(&screen, ANIM_ZOOM_SUBTLE);
     ui_screen_open(&screen_top, ANIM_ZOOM_SUBTLE);
@@ -367,6 +377,12 @@ int external_popup_loop() {
 }
 
 void external_popup_draw_top() {
+#ifdef __PS2__
+    /* The infobox is already drawn in the bottom pass. PS2 shares the same
+     * framebuffer for both 3DS screens: drawing the parent's detail labels
+     * afterward would paint over the foreground modal. */
+    if (in_infobox) return;
+#endif
     ui_screen_draw(&screen_top);
 }
 

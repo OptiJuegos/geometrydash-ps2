@@ -11,7 +11,7 @@
 
 #include "state.h"
 
-#include "mp3_player.h"
+#include "music_player.h"
 #include "math_helpers.h"
 #include "utils/gfx.h"
 

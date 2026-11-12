@@ -11,7 +11,7 @@
 #include "menus/palette_kit.h"
 #include "main.h"
 #include "color_channels.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 
 #include "main_menu.h"
@@ -33,6 +33,10 @@ static bool in_quit_game = false;
 #include "particles/circles.h"
 
 #include "save/saving.h"
+
+#ifdef __PS2__
+#include "../../ps2/src/boot_trace.h"
+#endif
 
 #ifdef __PSP__
 #include "../../psp/src/psp_port.h"
@@ -116,7 +120,11 @@ void action_open_info_card(int id) {
             break;
         case 3:
             // more jump buttons info
+#ifdef __PSP__
+            set_info_content("Swaps your jump input to Square.");
+#else
             set_info_content("Swaps your jump input to Y.");
+#endif
             break;
         case 4:
             // hitboxes info
@@ -124,7 +132,11 @@ void action_open_info_card(int id) {
             break;
         case 5:
             // debug info
+#ifdef __PSP__
+            set_info_content("Enables debug key shortcuts.<p>(Circle + L, Circle + R, Triangle)");
+#else
             set_info_content("Enables debug key shortcuts.<p>(B + L, B + R, X)");
+#endif
             break;
         case 6:
             // accurate percentage info
@@ -306,10 +318,29 @@ static void handle_players() {
 }
 
 void main_menu_loop() {
+#ifdef __PS2__
+    PS2_BootEvent("GDPS2 MENU: main_menu_loop begin, UI loading next");
+#endif
     exit_flag = false;
     new_state = 0;
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 01 before bottom UI load");
+#endif
+#ifdef __PS2__
+    /* PS2 has one physical screen; reuse PSP button positions, but use a
+     * platform-only title sprite without the baked-in PSP subtitle. */
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/main_menu_psp.txt");
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 02 bottom UI loaded; before top UI load");
+#endif
+    ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/main_menu_top_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/main_menu.txt");
     ui_load_screen(&default_screen_top, actions_top, sizeof(actions_top) / sizeof(actions_top[0]), "romfs:/menus/main_menu_top.txt");
+#endif
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 03 both UI screens loaded");
+#endif
     
     main_menu_color_index = 0;
     u32 color = default_lvl_colors[main_menu_color_index % NUM_MENU_COLORS];
@@ -331,13 +362,26 @@ void main_menu_loop() {
     UIImage *title = (UIImage *) ui_get_element_by_tag(&default_screen_top, "title");
 
     if (title && alt_title_screen) {
+#ifdef __PS2__
+        ui_image_set_image(title, 54, 1);
+#else
         ui_image_set_image(title, 3, 1);
+#endif
     }
 
     set_fade_status(FADE_STATUS_IN);
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 04 fade set; before music startup");
+#endif
 
     if (!playing_menu_loop) {
-        play_mp3("romfs:/songs/menuLoop.mp3", true, 0);
+#ifdef PS2_DIAG_MENU_STAGES
+        puts("GDPS2 MENUD: 05 calling play_music");
+#endif
+        play_music("romfs:/songs/menuLoop.mp3", true, 0);
+#ifdef PS2_DIAG_MENU_STAGES
+        puts("GDPS2 MENUD: 06 play_music returned");
+#endif
         playing_menu_loop = true;
     }
 
@@ -345,9 +389,21 @@ void main_menu_loop() {
     get_buffer(CHANNEL_GROUND)->active = false;
     get_buffer(CHANNEL_LINE)->active = false;
 
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 07 before allocate_particles");
+#endif
     allocate_particles();
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 08 before init_variables");
+#endif
     init_variables();
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 09 before reset_players");
+#endif
     reset_players();
+#ifdef PS2_DIAG_MENU_STAGES
+    puts("GDPS2 MENUD: 10 before menu event loop");
+#endif
 
     state.current_player = 0;
     trail = &trail_p1;
@@ -364,8 +420,23 @@ void main_menu_loop() {
     // }
 
     while (aptMainLoop()) {
+#ifdef __PS2__
+        static unsigned debug_menu_first_frame;
+        if (!debug_menu_first_frame++)
+            PS2_BootEvent("GDPS2 MENU: first frame, HID/UI update next");
+#endif
+#ifdef PS2_DIAG_MENU_STAGES
+        static int menu_diag_first_frame;
+        const bool diag_frame = menu_diag_first_frame++ == 0;
+        if (diag_frame) puts("GDPS2 MENUD: 11 entered first menu frame");
+        if ((menu_diag_first_frame % 60) == 0)
+            printf("GDPS2 MENUD: heartbeat menu_frames=%d\n", menu_diag_first_frame);
+#endif
         float delta = 1/60.f;
         hidScanInput();
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 12 hidScanInput returned");
+#endif
         u32 kDown = hidKeysDown();
 
 #ifdef __PSP__
@@ -379,7 +450,7 @@ void main_menu_loop() {
 #else
         if (kDown & KEY_SELECT) {
             game_state = STATE_EXIT;
-            stop_mp3();
+            stop_music();
             break; // break in order to return to hbmenu
         }
 #endif
@@ -408,12 +479,18 @@ void main_menu_loop() {
         p1_trail = false;
 
         handle_input();
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 13 handle_input returned");
+#endif
 
         if (!state.dead) {
             for (int i = 0; i < 4; i++) {
                 handle_players();
             }
         }
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 14 handle_players returned");
+#endif
         
         glitter_particles.emitting = false;
         glitter_particles_bottom.emitting = false;
@@ -432,6 +509,9 @@ void main_menu_loop() {
         MotionTrail_UpdateWaveTrail(&wave_trail_p1, delta);
         update_player_effects(delta);
         update_use_effects(delta, get_use_effect_array_ptr(GFX_TOP));
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 15 effects updated");
+#endif
 
         UIInput touch;
         touchPosition touchPos;
@@ -492,21 +572,43 @@ void main_menu_loop() {
 
         // Frees a render target, so keep it out of the frame below
         update_stereo_target();
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 16 before UI update");
+#endif
 
         if (!in_menu) ui_screen_update(&default_screen, &touch);
         ui_screen_update(&default_screen_top, &touch);
+#ifdef PS2_DIAG_MENU_STAGES
+        if (diag_frame) puts("GDPS2 MENUD: 17 after UI update");
+#endif
         do {
             update_touch_effect(DT);
             
             bg_scroll += 5.19300155f;
+#ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 18 before C3D_FrameBegin");
+#endif
             C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+#ifdef __PS2__
+            if (debug_menu_first_frame == 1)
+                PS2_BootEvent("GDPS2 MENU: first C3D_FrameBegin succeeded");
+#endif
+#ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 19 frame begun");
+#endif
             
             // Top screen, drawn once per eye when 3D is on
             for (int eye = 0; begin_top_eye(eye); eye++) {
                 draw_fade();
 
                 begin_eye_layer(DEPTH_BACKGROUND);
+#if defined(__PSP__) || defined(__PS2__)
+                // the background's lighter, lower part (as in a level): its
+                // top is darker, and the one screen showed it as a dark band
+                draw_background(-40 + (bg_scroll / 8), 200);
+#else
                 draw_background(-40 + (bg_scroll / 8), 0);
+#endif
                 end_eye_layer();
 
                 C2D_ViewScale(SCALE, SCALE);
@@ -515,7 +617,13 @@ void main_menu_loop() {
 
                 // Same trick as in game, the player floats in front of the screen
                 begin_eye_layer(DEPTH_LEVEL);
+#ifndef __PS2__
+                /* PS2 composites both logical screens directly in one GS
+                 * framebuffer. Replaying the same trail with two cameras
+                 * drew occasional long diagonal triangles across the menu.
+                 * Keep its bottom pass below, where the player is visible. */
                 draw_player_effects();
+#endif
                 change_blending(true);
                 draw_use_effects(get_use_effect_array_ptr(GFX_TOP));
 
@@ -526,7 +634,9 @@ void main_menu_loop() {
                 C2D_ViewScale(1/SCALE, 1/SCALE);
 
                 begin_eye_layer(DEPTH_UI);
+#ifndef __PS2__
                 ui_screen_draw(&default_screen_top);
+#endif
                 end_eye_layer();
 
                 begin_eye_layer(DEPTH_POPUP);
@@ -535,6 +645,9 @@ void main_menu_loop() {
             }
 
             // Bottom Screen
+#ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 20 top scene drawn");
+#endif
             C2D_TargetClear(bot, C2D_Color32(0, 0, 0, 255));
             C2D_SceneBegin(bot);
 
@@ -565,6 +678,9 @@ void main_menu_loop() {
             C2D_ViewScale(1/SCALE, 1/SCALE);
 
             ui_screen_draw(&default_screen);
+#ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 21 bottom scene/UI drawn");
+#endif
             if (in_settings_hub) {
                 int returned = settings_hub_loop();
                 if (returned) {
@@ -612,7 +728,7 @@ void main_menu_loop() {
                 int returned = quit_game_loop();
                 if (returned == QUIT_GAME_YES) {
                     new_state = STATE_EXIT;
-                    stop_mp3();
+                    stop_music();
                 }
                 if (returned != QUIT_GAME_OPEN) in_quit_game = false;
             }
@@ -623,8 +739,27 @@ void main_menu_loop() {
             change_blending(false);
 
             C2D_ViewReset();
+#ifdef __PS2__
+            /* The PS2 backend merges both 3DS views into one framebuffer.
+             * Draw the title from the real top-screen UI after the bottom
+             * background, which would otherwise paint over it. */
+            if (!in_menu) {
+                C2D_SceneBegin(top);
+                ui_screen_draw(&default_screen_top);
+            }
+#endif
 
+            #ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 22 before C3D_FrameEnd");
+            #endif
             C3D_FrameEnd(0);
+#ifdef __PS2__
+            if (debug_menu_first_frame == 1)
+                PS2_BootEvent("GDPS2 MENU: first C3D_FrameEnd succeeded");
+#endif
+            #ifdef PS2_DIAG_MENU_STAGES
+            if (diag_frame) puts("GDPS2 MENUD: 23 C3D_FrameEnd returned");
+            #endif
         } while (handle_fading());
 
         if (new_state) {

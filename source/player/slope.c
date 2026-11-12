@@ -678,7 +678,7 @@ void slope_collide(int obj, Player *player) {
                 Player *other_player = (state.current_player == 0 ? &state.player2 : &state.player);
 
                 // Make both times synced if close enough
-                if (state.dual && other_player->slope_data.slope_id >= 0 && fabsf(player->timeElapsed - other_player->slope_data.elapsed) < 0.10) {
+                if (state.dual && other_player->slope_data.slope_id >= 0 && fabsf(player->timeElapsed - other_player->slope_data.elapsed) < 0.10f) {
                     player->slope_data.elapsed = other_player->slope_data.elapsed;
                 } else {
                     player->slope_data.elapsed = state.old_player.timeElapsed;

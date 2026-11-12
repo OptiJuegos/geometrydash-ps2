@@ -4,7 +4,7 @@
 #include "menus/core/ui_screen.h"
 #include "menus/components/ui_list.h"
 #include "main.h"
-#include "mp3_player.h"
+#include "music_player.h"
 #include "graphics.h"
 
 #include "save/config.h"
@@ -32,13 +32,18 @@ void soggy_menu_loop() {
     gotSogged = true;
     cfg_save(); // You got sogged
 
+#ifdef __PS2__
+    ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/soggy_ps2.txt");
+    ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/soggy_top_ps2.txt");
+#else
     ui_load_screen(&default_screen, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/soggy.txt");
     ui_load_screen(&default_screen_top, actions, sizeof(actions) / sizeof(actions[0]), "romfs:/menus/soggy_top.txt");
+#endif
 
     set_fade_status(FADE_STATUS_IN);
 
-    stop_mp3();
-    play_mp3("romfs:/songs/SogLoop.mp3", true, 0);
+    stop_music();
+    play_music("romfs:/songs/SogLoop.mp3", true, 0);
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -88,7 +93,7 @@ void soggy_menu_loop() {
         } while (handle_fading());
 
         if (exit_flag) {
-            stop_mp3();
+            stop_music();
             game_state = STATE_CREATOR_MENU;
             break;
         }

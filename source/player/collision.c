@@ -18,6 +18,21 @@
 #include "save/saving.h"
 #include "menus/level_select.h"
 
+#ifdef __PSP__
+#include "../psp/src/psp_port.h"
+#endif
+
+#if defined(__PSP__) || defined(__PS2__)
+#include "triggers_v2.h"
+#include "menus/settings.h"
+// a hitbox at the object's size (2.0 key 32)
+#define HB_W(hb, o) ((hb)->width * OBJ_SCALE(o))
+#define HB_H(hb, o) ((hb)->height * OBJ_SCALE(o))
+#else
+#define HB_W(hb, o) ((hb)->width)
+#define HB_H(hb, o) ((hb)->height)
+#endif
+
 Player *player_1 = &state.player;
 Player *player_2 = &state.player2;
 
@@ -282,7 +297,7 @@ void set_dual_bounds() {
 
 void setup_dual() {
     memcpy(&state.player2, &state.player, sizeof(Player));
-    memset(&state.p1_trail_data[1], 0, sizeof(P1Trail) * P1_TRAIL_DURATION);
+    memset(&state.p1_trail_data[1], 0, sizeof(P1Trail) * P1_TRAIL_LENGTH);
     state.p1_trail_pos[1] = 0;
     state.player2.upside_down = state.player.upside_down ^ 1;
     UseEffect *effect = add_use_effect(player_1->x, player_1->y, USE_EFFECT_OBJ_P1, &portal_use_effect, get_use_effect_array_ptr(GFX_TOP));
@@ -298,6 +313,90 @@ void setup_dual() {
         effect2->def.colorB = get_white_if_black(p2_color).b;
     }
 }
+
+#if defined(__PSP__) || defined(__PS2__)
+// a teleport portal touched this step, per player (-1: none)
+static int pending_teleport[2] = { -1, -1 };
+
+// the teleport touched this step (as wiidash): straight to the way out's height
+void apply_pending_teleport(Player *player) {
+    int obj = pending_teleport[state.current_player];
+    pending_teleport[state.current_player] = -1;
+    if (obj < 0) return;
+    int out = teleport_exit(obj);
+    if (out < 0) return;
+
+    float to_y = objects.y[out];
+#ifdef __PSP__
+    if (settingsState.enableDebugBindings)
+        psp_log("teleport: obj %d (%.0f,%.0f rot %.0f) -> %.0f, player %.0f,%.0f gm %d ud %d\n", obj,
+                objects.x[obj], objects.y[obj], objects.rotation[obj], to_y, player->x, player->y,
+                player->gamemode, player->upside_down);
+    {
+        extern float psp_teleport_watch;
+        psp_teleport_watch = 1.f;
+    }
+#endif
+    // a gamemode with a floor and a ceiling (ship, UFO, ball, wave...): they
+    // go along by the same whole blocks, or the player stayed held at the
+    // old ceiling (High Life's UFO teleports up the map). A way out between
+    // the floor and the ceiling keeps them where they are: Deadlocked's ball
+    // goes from the ceiling (y 409) to the floor (y 193) of the same room,
+    // and the shift had dropped the floor to 0 and the room off the screen
+    float old_ground = state.ground_y;
+    if (state.ceiling_y < 999999 && (to_y < state.ground_y || to_y > state.ceiling_y)) {
+        float shift = roundf((to_y - player->y) / 30.f) * 30.f;
+        if (state.dual) {
+            state.dual_portal_y += shift;
+            set_dual_bounds();
+        } else {
+            float height = state.ceiling_y - state.ground_y;
+            state.ground_y = fmaxf(0, state.ground_y + shift);
+            state.ceiling_y = state.ground_y + height;
+            set_intended_ceiling();
+        }
+    }
+    player->y = to_y;
+    // as wiidash: no movement counted across the jump (the collisions would
+    // see it pass through everything between)
+    state.old_player.y = to_y;
+    MotionTrail_StopStroke(trail);
+
+    if (player->gamemode == GAMEMODE_PLAYER && !state.dual) {
+        // a way out outside the player's own margins (140 above, 30 below,
+        // swapped upside down): the camera jumps there too, or the player
+        // comes out at the screen's edge while the view crawls. Inside the
+        // margins the normal camera follows without a jump (as wiidash)
+        float upside_down_offset = player->upside_down ? -30.f : 0;
+        float dy = to_y - state.camera_y;
+        if (dy > 140.f + upside_down_offset || dy < 30.f + upside_down_offset) {
+            state.camera_y = to_y - (SCREEN_HEIGHT_AREA / 2 - LEVEL_Y_OFFSET);
+        }
+    } else if (state.ceiling_y < 999999) {
+        // ship, UFO, ball, wave and dual: the camera sits on the middle of
+        // the floor and the ceiling, so it goes along with them. Without
+        // this it stayed behind and slid back for over a second while the
+        // player sat at the screen's edge
+        state.camera_y += state.ground_y - old_ground;
+    }
+    if (state.camera_y < 0) state.camera_y = 0;
+    if (state.camera_y > MAX_LEVEL_HEIGHT - SCREEN_HEIGHT_AREA)
+        state.camera_y = MAX_LEVEL_HEIGHT - SCREEN_HEIGHT_AREA;
+
+    UseEffect *e_in = add_use_effect(objects.x[obj], objects.y[obj], obj, &portal_use_effect, get_use_effect_array_ptr(GFX_TOP));
+    if (e_in) {
+        e_in->def.colorR = 56 / 255.f;
+        e_in->def.colorG = 200 / 255.f;
+        e_in->def.colorB = 255 / 255.f;
+    }
+    UseEffect *e_out = add_use_effect(objects.x[out], objects.y[out], out, &portal_use_effect, get_use_effect_array_ptr(GFX_TOP));
+    if (e_out) {
+        e_out->def.colorR = 255 / 255.f;
+        e_out->def.colorG = 255 / 255.f;
+        e_out->def.colorB = 0 / 255.f;
+    }
+}
+#endif
 
 // Handle collision with special objects (orbs, pads, portals)
 void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) {
@@ -379,7 +478,14 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
             if (!GET_ACTIVATED(obj) && (state.input.holdJump) && player->buffering_state == BUFFER_READY) {
                 MotionTrail_ResumeStroke(trail);
                 player->vel_y = jump_heights_table[state.speed][JUMP_YELLOW_ORB][player->gamemode][player->mini];
-                
+#if defined(__PSP__) || defined(__PS2__)
+                // the robot's yellow orb jump is 0.9 of the cube's (wiidash's table)
+                if (player->robot && player->gamemode == GAMEMODE_PLAYER) {
+                    player->vel_y *= 0.9f;
+                    player->robot_boost = 0;
+                }
+#endif
+
                 player->ball_rotation_speed = -BALL_SLOW_ROTATION;
                 
                 player->on_ground = false;
@@ -428,6 +534,48 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                 SET_ACTIVATED(obj, true);
             } 
             break;
+#if defined(__PSP__) || defined(__PS2__)
+        case GREEN_ORB:
+            // GD 2.0 (as wiidash): flips gravity and jumps like the yellow orb
+            if (!GET_COLLIDED(obj)) add_use_effect(objects.x[obj], objects.y[obj], obj, &orb_collide_effect, get_use_effect_array_ptr(GFX_TOP));
+            if (!GET_ACTIVATED(obj) && (state.input.holdJump) && player->buffering_state == BUFFER_READY) {
+                MotionTrail_ResumeStroke(trail);
+                if (player->gamemode == GAMEMODE_DART) MotionTrail_AddWavePoint(wave_trail);
+                player->gravObj_id = obj;
+                player->ceiling_inv_time = 0.5f;
+
+                player->upside_down ^= 1;
+                player->vel_y = jump_heights_table[state.speed][JUMP_YELLOW_ORB][player->gamemode][player->mini];
+                if (player->gamemode == GAMEMODE_SHIP) player->vel_y *= 0.7f;
+                if (player->robot && player->gamemode == GAMEMODE_PLAYER) {
+                    player->vel_y *= 0.9f;
+                    player->robot_boost = 0;
+                    player->robot_anim = ROBOT_ANIM_JUMP_START;
+                    player->robot_anim_t = 0;
+                }
+                update_rotation_direction(player);
+                flip_other_player(state.current_player);
+
+                state.current_data.jumps++;
+                player->ball_rotation_speed = -BALL_SLOW_ROTATION;
+
+                player->on_ground = false;
+                player->on_ceiling = false;
+                player->inverse_rotation = false;
+                player->left_ground = true;
+                player->buffering_state = BUFFER_END;
+
+                UseEffect *effect = add_use_effect(objects.x[obj], objects.y[obj], obj, &orb_use_effect, get_use_effect_array_ptr(GFX_TOP));
+                if (effect) {
+                    effect->def.colorR = 0;
+                    effect->def.colorG = 255 / 255.f;
+                    effect->def.colorB = 0;
+                }
+
+                SET_ACTIVATED(obj, true);
+            }
+            break;
+#endif
         case BLUE_ORB:
             if (!GET_COLLIDED(obj)) add_use_effect(objects.x[obj], objects.y[obj], obj, &orb_collide_effect, get_use_effect_array_ptr(GFX_TOP));
             if (!GET_ACTIVATED(obj) && (state.input.holdJump) && player->buffering_state == BUFFER_READY) {    
@@ -472,6 +620,9 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                     player->vel_y /= -2;
                     player->upside_down = false;
                     player->inverse_rotation = false;
+#if defined(__PSP__) || defined(__PS2__)
+                    player->robot_boost = 0; // a flip ends the robot's rise (wiidash)
+#endif
 
                     if (player->gamemode == GAMEMODE_BIRD) 
                         player->rotation = 0;
@@ -501,6 +652,9 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                     player->vel_y /= -2;
                     player->upside_down = true;
                     player->inverse_rotation = false;
+#if defined(__PSP__) || defined(__PS2__)
+                    player->robot_boost = 0;
+#endif
 
                     if (player->gamemode == GAMEMODE_BIRD) 
                         player->rotation = 0;
@@ -681,10 +835,23 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                 }
             }
             break;
-        case CUBE_PORTAL: 
+        case CUBE_PORTAL:
+#if defined(__PSP__) || defined(__PS2__)
+        case ROBOT_PORTAL:
+#endif
             if (!GET_ACTIVATED(obj)) {
                 state.ground_y = 0;
                 state.ceiling_y = 999999;
+#if defined(__PSP__) || defined(__PS2__)
+                bool to_robot = objects.id[obj] == ROBOT_PORTAL;
+                if (player->gamemode == GAMEMODE_PLAYER && player->robot != to_robot) {
+                    player->robot = to_robot;
+                    player->robot_boost = 0;
+                    player->snap_rotation = true;
+                    set_checkpoint_timer(0);
+                }
+                if (player->gamemode != GAMEMODE_PLAYER) player->robot_boost = 0;
+#endif
                 if (player->gamemode != GAMEMODE_PLAYER) {
                     if (player->gamemode != GAMEMODE_PLAYER_BALL) {
                         player->vel_y /= 2;
@@ -695,6 +862,9 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                     player->ceiling_inv_time = CEILING_INVUL_TIME;
                     player->snap_rotation = true;
                     set_gamemode(player, GAMEMODE_PLAYER);
+#if defined(__PSP__) || defined(__PS2__)
+                    player->robot = to_robot;
+#endif
                     set_checkpoint_timer(0);
                     flip_other_player(state.current_player ^ 1);
                     update_rotation_direction(player);
@@ -707,7 +877,18 @@ void handle_special_hitbox(Player *player, int obj, const ObjectHitbox *hitbox) 
                 SET_ACTIVATED(obj, true);
             }
             break;
-        case SHIP_PORTAL: 
+#if defined(__PSP__) || defined(__PS2__)
+        case BLUE_TP_PORTAL:
+            // GD 2.0 teleport: done once everything else this step touches has
+            // had its turn (levels put a gravity portal right on the way in:
+            // teleported first, it wasn't touched any more)
+            if (!GET_ACTIVATED(obj)) {
+                pending_teleport[state.current_player] = obj;
+                SET_ACTIVATED(obj, true);
+            }
+            break;
+#endif
+        case SHIP_PORTAL:
             if (!GET_ACTIVATED(obj)) {
                 state.ground_y = fmaxf(0, ip1_ceilf((objects.y[obj] - 180) / 30.f)) * 30;
                 state.ceiling_y = state.ground_y + 300;
@@ -1131,7 +1312,7 @@ void handle_collision(Player *player, int obj, const ObjectHitbox *hitbox) {
                 // Only do the funny grav snap if player is touching a gravity object and internal hitbox is touching block
                 bool internalCollidingBlock = intersect(
                     player->x, player->y, internal.width, internal.height, 0, 
-                    objects.x[obj], objects.y[obj], hitbox->width, hitbox->height, objects.rotation[obj]
+                    objects.x[obj], objects.y[obj], HB_W(hitbox, obj), HB_H(hitbox, obj), objects.rotation[obj]
                 );
 
                 float diff = obj_gravBottom(player, obj) - gravInternalBottom(player);
@@ -1143,8 +1324,8 @@ void handle_collision(Player *player, int obj, const ObjectHitbox *hitbox) {
             
             // Check collision with internal hitbox
             if ((player->gamemode == GAMEMODE_DART || (!gravSnap && !safeZone)) && intersect(
-                player->x, player->y, internal.width, internal.height, 0, 
-                objects.x[obj], objects.y[obj], hitbox->width, hitbox->height, objects.rotation[obj]
+                player->x, player->y, internal.width, internal.height, 0,
+                objects.x[obj], objects.y[obj], HB_W(hitbox, obj), HB_H(hitbox, obj), objects.rotation[obj]
             )) {
                 if (objects.id[obj] == BREAKABLE_BLOCK) {
                     // Spawn breakable brick particles
@@ -1154,6 +1335,16 @@ void handle_collision(Player *player, int obj, const ObjectHitbox *hitbox) {
                     objects.toggled[obj] = true;
                 } else {
                     // Not a brick, die
+#ifdef __PSP__
+                    {
+                        extern bool psp_autoload_test;
+                        static int last_logged = -1;
+                        if (settingsState.enableDebugBindings && (!state.noclip || (psp_autoload_test && obj != last_logged)))
+                            psp_log("crushed in obj %d (id %d at %.0f,%.0f), player %.0f,%.0f gm %d\n", obj, objects.id[obj],
+                                    objects.x[obj], objects.y[obj], player->x, player->y, player->gamemode);
+                        last_logged = obj;
+                    }
+#endif
                     kill_player(DEATH_BLOCK);
                 }
 
@@ -1236,6 +1427,16 @@ void handle_collision(Player *player, int obj, const ObjectHitbox *hitbox) {
             }
             break;
         case HITBOX_HAZARD:
+#ifdef __PSP__
+            {
+                extern bool psp_autoload_test;
+                static int last_logged = -1;
+                if (settingsState.enableDebugBindings && (!state.noclip || (psp_autoload_test && obj != last_logged)))
+                    psp_log("killed by obj %d (id %d at %.0f,%.0f), player %.0f,%.0f gm %d\n", obj, objects.id[obj],
+                            objects.x[obj], objects.y[obj], player->x, player->y, player->gamemode);
+                last_logged = obj;
+            }
+#endif
             kill_player(hitbox->type == COLLISION_CIRCLE ? DEATH_SAW : DEATH_SPIKE);
             break;
         case HITBOX_SPECIAL:
@@ -1257,10 +1458,28 @@ void collide_with_obj(Player *player, int obj) {
     float width = objects.width[obj];
     float height = objects.height[obj];
 
+#if defined(__PSP__) || defined(__PS2__)
+    // a 2.0 object's hitbox off its center (the teleport's sits 12 to the
+    // front), turned and flipped with it. The game's own table has none
+    if (objects.id[obj] >= 746 && (hitbox->x != 0 || hitbox->y != 0)) {
+        float hx = hitbox->x * OBJ_SCALE(obj) * (objects.flippedH[obj] ? -1 : 1);
+        float hy = hitbox->y * OBJ_SCALE(obj) * (objects.flippedV[obj] ? -1 : 1);
+        float r = DegToRad(objects.rotation[obj]);
+        float c = cosf(r), s = sinf(r);
+        // clockwise, y up
+        x += hx * c + hy * s;
+        y += -hx * s + hy * c;
+    }
+#endif
+
     if (UNLIKELY(hitbox->type == COLLISION_CIRCLE)) {
         if (intersect_rect_circle(
             player->x, player->y, player->width, player->height, 0, 
+#if defined(__PSP__) || defined(__PS2__)
+            x, y, hitbox->width * OBJ_SCALE(obj)
+#else
             x, y, hitbox->width
+#endif
         )) {
             handle_collision(player, obj, hitbox);
             SET_COLLIDED(obj, true);
@@ -1308,6 +1527,10 @@ void collide_with_slope(Player *player, int obj, bool has_slope) {
     
     float width = hitbox->width;
     float height = hitbox->height;
+#if defined(__PSP__) || defined(__PS2__)
+    width *= OBJ_SCALE(obj);
+    height *= OBJ_SCALE(obj);
+#endif
 
     if (intersect(
         player->x, player->y, player->width, player->height, 0, 

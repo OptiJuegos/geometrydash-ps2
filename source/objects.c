@@ -1764,6 +1764,10 @@ const ChildSprite children_740[] = {
  { 808, 0.00, 0.00, 1.00, 1.00, 0, 0, 1, 0, 0.00, COLOR_TYPE_BASE, 1.00 },
 };
 
+#if defined(__PSP__) || defined(__PS2__)
+#include "objects_v2_defs.inc"
+#endif
+
 const GameObject game_objects[GAME_OBJECT_COUNT] = {
     { -1, -1, 0.0f, 0.0f, 0, 0, 0, 0, 0, 1.f, 0, NULL, NULL },
     { 650, 120, 0.00, 0.00, 5, 2, 1004, COLOR_TYPE_BASE, 0, 1.00, 0, NULL, hitbox_1 },
@@ -2510,5 +2514,12 @@ const GameObject game_objects[GAME_OBJECT_COUNT] = {
     { 14, 5, 0.00, 0.00, 5, 1, 1004, COLOR_TYPE_BASE, 0, 1.00, 0, NULL, hitbox_742 },
     { -1, -1, 0.0f, 0.0f, 0, 0, 0, 0, 0, 1.f, 0, NULL, NULL },
     { -1, -1, 0.00, 0.00, 5, 2, 0, COLOR_TYPE_WHITE, 0, 1.00, 0, NULL, NULL },
+#if defined(__PSP__) || defined(__PS2__)
+    V2_ROW_745, // robot portal, with its sprite
+#else
     { -1, -1, 5.00, 0.00, 5, 10, 0, COLOR_TYPE_WHITE, 0, 1.00, 0, NULL, hitbox_745 },
+#endif
+#if defined(__PSP__) || defined(__PS2__)
+#include "objects_v2_rows.inc"
+#endif
 };

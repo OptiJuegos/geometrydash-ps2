@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include "utils/sprite_sort_small.h"
 #include "c2d/base.h"
 #include "c2d/spritesheet.h"
 #include "objects.h"
@@ -6,7 +7,7 @@
 #include "math_helpers.h"
 #include "color_channels.h"
 #include <stdlib.h>
-#include "mp3_player.h"
+#include "music_player.h"
 #include "icons.h"
 #include "menus/icon_kit.h"
 #include "menus/palette_kit.h"
@@ -35,6 +36,11 @@
 
 #ifdef __PSP__
 #include "../psp/src/psp_port.h"
+#endif
+#include "triggers_v2.h"
+#ifdef __PS2__
+#include "../ps2/src/ps2_aspect.h"
+#include "../ps2/src/ps2_sincos.h"
 #endif
 
 const Color white = { 255, 255, 255 };
@@ -67,7 +73,122 @@ SpriteTemplate sprite_templates[GAME_OBJECT_COUNT]; // global cache
 
 float touch_effect_drag_timer = 0.f;
 
+#if defined(__PSP__) || defined(__PS2__)
+// the 2.0 objects' sheet (psp/tools/mkv2sheet.py, from the user's GD): may
+// not be there, then those objects draw nothing
+C2D_SpriteSheet spriteSheetV2;
+
+// GD 2.0's animated objects, as wiidash animates them (psp/tools/wii2objects.py):
+// fire, water and the loading circles swap sprites (FrameAnim); monsters and
+// the sludge move their parts (SkelAnim, from GD's plists). A "slot" is one
+// of the row's sprites: 0 the object's own, then each detail's
+typedef struct { float x, y, sx, sy, rot; } AnimPose;
+typedef struct {
+    short id;
+    unsigned char fps, frames, slots, own_clock;
+    const short *tex;             // frames x slots
+    const unsigned char *flip;    // per frame: drawn flipped
+    const float *scale;           // per slot
+} FrameAnim;
+typedef struct {
+    short id;
+    unsigned char fps, frames, parts, slots;
+    const unsigned char *part_of; // per slot, the plist's part it is
+    const AnimPose *poses;        // frames x parts
+} SkelAnim;
+#include "objects_v2_anim.inc"
+
+static float anim_clock;
+
+void obj_anim_tick(float dt) {
+    anim_clock += dt;
+    if (anim_clock > 3600.f) anim_clock -= 3600.f;
+}
+
+// 2.0 id -> its entry in frame_anims / skel_anims / v2_spin, plus one (0:
+// none). Each animated or spinning object on screen looks itself up every
+// frame, so the tables are indexed once instead of searched each time.
+#define V2_FIRST_ID 746
+static unsigned char v2_frame_idx[GAME_OBJECT_COUNT - V2_FIRST_ID];
+static unsigned char v2_skel_idx[GAME_OBJECT_COUNT - V2_FIRST_ID];
+static unsigned char v2_spin_idx[GAME_OBJECT_COUNT - V2_FIRST_ID];
+
+static void v2_index_tables(void) {
+    static bool ready;
+    if (ready) return;
+    ready = true;
+    for (size_t i = 0; i < sizeof(frame_anims) / sizeof(frame_anims[0]); i++)
+        v2_frame_idx[frame_anims[i].id - V2_FIRST_ID] = (unsigned char)(i + 1);
+    for (size_t i = 0; i < sizeof(skel_anims) / sizeof(skel_anims[0]); i++)
+        v2_skel_idx[skel_anims[i].id - V2_FIRST_ID] = (unsigned char)(i + 1);
+    for (size_t i = 0; i < sizeof(v2_spin) / sizeof(v2_spin[0]); i++)
+        v2_spin_idx[v2_spin[i].id - V2_FIRST_ID] = (unsigned char)(i + 1);
+}
+
+static const FrameAnim *frame_anim_of(int id) {
+    if (id < V2_FIRST_ID || id >= GAME_OBJECT_COUNT) return NULL;
+    v2_index_tables();
+    int k = v2_frame_idx[id - V2_FIRST_ID];
+    return k ? &frame_anims[k - 1] : NULL;
+}
+
+static const SkelAnim *skel_anim_of(int id) {
+    if (id < V2_FIRST_ID || id >= GAME_OBJECT_COUNT) return NULL;
+    v2_index_tables();
+    int k = v2_skel_idx[id - V2_FIRST_ID];
+    return k ? &skel_anims[k - 1] : NULL;
+}
+
+// each object its own phase (wiidash starts each one's clock when it shows)
+static float anim_time(int obj, bool own) {
+    return anim_clock + (own ? (objects.random[obj] & 1023) * (1.f / 256.f) : 0.f);
+}
+
+static void skel_pose(const SkelAnim *a, int slot, float t, AnimPose *out) {
+    float ft = t * a->fps;
+    int f = (int)ft;
+    float k = ft - f;
+    f %= a->frames;
+    int g = (f + 1) % a->frames;
+    int part = a->part_of[slot];
+    const AnimPose *p = &a->poses[f * a->parts + part];
+    const AnimPose *q = &a->poses[g * a->parts + part];
+    out->x = p->x + (q->x - p->x) * k;
+    out->y = p->y + (q->y - p->y) * k;
+    out->sx = p->sx + (q->sx - p->sx) * k;
+    out->sy = p->sy + (q->sy - p->sy) * k;
+    float d = q->rot - p->rot;
+    if (d > 180.f) d -= 360.f;
+    if (d < -180.f) d += 360.f;
+    out->rot = p->rot + d * k;
+}
+
+static C2D_SpriteSheet *get_sprite_sheet(int index, int *rel_index);
+
+// a frame animation's sprite for a slot this frame (false: keep the row's)
+static bool frame_sprite(const FrameAnim *a, int slot, float t, C2D_Sprite *spr, float *scale, bool *flip) {
+    int f = (int)(t * a->fps) % a->frames;
+    int tex = a->tex[f * a->slots + slot];
+    if (tex < 0) return false;
+    int rel;
+    C2D_SpriteSheet *sheet = get_sprite_sheet(tex, &rel);
+    C2D_Sprite none = { 0 };
+    *spr = none;
+    C2D_SpriteFromSheet(spr, *sheet, rel);
+    C2D_SpriteSetCenter(spr, 0.5f, 0.5f);
+    *scale = a->scale[slot];
+    *flip = a->flip[f];
+    return true;
+}
+#endif
+
 static C2D_SpriteSheet *get_sprite_sheet(int index, int *rel_index) {
+#if defined(__PSP__) || defined(__PS2__)
+    if (index >= V2_TEXTURE_START) {
+        *rel_index = index - V2_TEXTURE_START;
+        return &spriteSheetV2;
+    }
+#endif
     // Check if index belongs to spritesheet 1 (most objects)
     if (index < SPRITESHEET2_START) {
         *rel_index = index;
@@ -155,6 +276,12 @@ void cache_all_sprites() {
 
         // Get glow frame
         if (obj->glow_frame >= 0) {
+#if defined(__PSP__) || defined(__PS2__)
+            // the 2.0 objects' glows are in their own sheet
+            if (obj->glow_frame >= V2_TEXTURE_START)
+                C2D_SpriteFromSheet(&sprite_templates[id].glow_template, spriteSheetV2, obj->glow_frame - V2_TEXTURE_START);
+            else
+#endif
             C2D_SpriteFromSheet(&sprite_templates[id].glow_template, glowSheet, obj->glow_frame);
             C3D_TexSetFilter(sprite_templates[id].glow_template.image.tex, GPU_LINEAR, GPU_LINEAR);
             C2D_SpriteSetCenter(&sprite_templates[id].glow_template, 0.5f, 0.5f);
@@ -185,6 +312,7 @@ void free_cached_sprites() {
     for (int i = 0; i < GAME_OBJECT_COUNT; i++) {
         if (sprite_templates[i].child_templates)
             free(sprite_templates[i].child_templates);
+        sprite_templates[i].child_templates = NULL;
     }
 }
 
@@ -254,7 +382,11 @@ inline int get_color_channel(int col_type, int obj, const GameObject *game_obj) 
             }
         }
     }
+#if defined(__PSP__) || defined(__PS2__)
+    return v2_channel(col_channel);
+#else
     return col_channel;
+#endif
 }
 
 // Baby's first reverse engineered function
@@ -423,6 +555,15 @@ int get_obj_random_layer(int obj, int id) {
 
 // Deco saws rotate slower than normal saws. If not a saw, rotation speed is just 0
 float get_rotation_speed(int id) {
+#if defined(__PSP__) || defined(__PS2__)
+    // GD 2.0's (wiidash's speeds)
+    if (id >= V2_FIRST_ID) {
+        if (id >= GAME_OBJECT_COUNT) return 0.f;
+        v2_index_tables();
+        int k = v2_spin_idx[id - V2_FIRST_ID];
+        return k ? v2_spin[k - 1].speed : 0.f;
+    }
+#endif
     switch (id) {
         case 88: 
         case 89:
@@ -517,6 +658,33 @@ float get_object_pulse(float amplitude, int id, int layer) {
     return 1.0f;
 }
 
+// Object angles are nearly always whole degrees; cosf/sinf are software on
+// the PS2/PSP, so those come from a table built on first use.
+static inline void cos_sin_degrees(float deg, float rad, float *c, float *s) {
+    static float table[360][2];
+    static bool ready;
+    int k = (int)deg;
+    if ((float)k == deg && (unsigned)k < 360) {
+        if (!ready) {
+            for (int i = 0; i < 360; i++) {
+                float r = C3D_AngleFromDegrees((float)i);
+                table[i][0] = cosf(r);
+                table[i][1] = sinf(r);
+            }
+            ready = true;
+        }
+        *c = table[k][0];
+        *s = table[k][1];
+        return;
+    }
+#ifdef __PS2__
+    PS2_SinCos(rad, s, c); // saws and spinning deco: fractional angles
+#else
+    *c = cosf(rad);
+    *s = sinf(rad);
+#endif
+}
+
 void spawn_object_at(
     int obj_game,
     int id,
@@ -529,14 +697,14 @@ void spawn_object_at(
 ) {
     const GameObject* obj = &game_objects[id];
 
-    float rad = C3D_AngleFromDegrees(adjust_angle(deg, 0, state.mirror_mult < 0));
+    float adjusted_deg = adjust_angle(deg, 0, state.mirror_mult < 0);
+    float rad = C3D_AngleFromDegrees(adjusted_deg);
+    float cos_r, sin_r;
 #ifdef __PSP__
     // every object on screen, every frame: one VFPU instruction
-    float cos_r, sin_r;
     psp_sincosf(rad, &sin_r, &cos_r);
 #else
-    float cos_r = cosf(rad);
-    float sin_r = sinf(rad);
+    cos_sin_degrees(adjusted_deg, rad, &cos_r, &sin_r);
 #endif
 
     int flip_x_mult = (flip_x ? -1 : 1);
@@ -552,12 +720,38 @@ void spawn_object_at(
 
     if (sprite_count >= MAX_SPRITES - 1) return;
 
+#if defined(__PSP__) || defined(__PS2__)
+    // an animated 2.0 object: its sprites this frame / its parts' poses
+    const FrameAnim *fa = NULL;
+    const SkelAnim *sa = NULL;
+    float at = 0;
+    if (id >= 918 && id <= 1328 && obj_game >= 0) {
+        fa = frame_anim_of(id);
+        if (!fa) sa = skel_anim_of(id);
+        if (fa) at = anim_time(obj_game, fa->own_clock);
+        else if (sa) at = anim_time(obj_game, true);
+    }
+    bool turned = (flip_x != 0) ^ (flip_y != 0);
+#endif
+
     // Spawn parent, skip if no texture
     if (obj->texture >= 0) {
         SpriteObject *vo = &viewable_objects[sprite_count];
 
         float local_x = obj->x * flip_x_mult;
         float local_y = obj->y * flip_y_mult;
+#if defined(__PSP__) || defined(__PS2__)
+        float ex = 1.f, ey = 1.f, erot = 0.f;
+        if (sa) {
+            AnimPose p;
+            skel_pose(sa, 0, at, &p);
+            local_x = p.x * flip_x_mult;
+            local_y = p.y * flip_y_mult;
+            ex = p.sx;
+            ey = p.sy;
+            erot = C3D_AngleFromDegrees(turned ? -p.rot : p.rot);
+        }
+#endif
 
         float rot_x = local_x * m00 + local_y * m01;
         float rot_y = local_x * m10 + local_y * m11;
@@ -580,8 +774,22 @@ void spawn_object_at(
         float pulse_scale = get_object_pulse(amplitude, id, 0);
 
         C2D_SpriteSetPos(&vo->spr, p_x, p_y);
+#if defined(__PSP__) || defined(__PS2__)
+        if (fa) {
+            float fs;
+            bool ff;
+            if (frame_sprite(fa, 0, at, &vo->spr, &fs, &ff)) {
+                ex = ff ? -fs : fs;
+                ey = fs;
+            }
+            C2D_SpriteSetPos(&vo->spr, p_x, p_y);
+        }
+        C2D_SpriteSetScale(&vo->spr, sx * pulse_scale * ex, sy * pulse_scale * ey);
+        C2D_SpriteSetRotation(&vo->spr, rad + erot);
+#else
         C2D_SpriteSetScale(&vo->spr, sx * pulse_scale, sy * pulse_scale);
         C2D_SpriteSetRotation(&vo->spr, rad);
+#endif
 
         vo->obj = obj_game;
         vo->layer = 0;
@@ -627,6 +835,19 @@ void spawn_object_at(
 
             float c_local_x = c->x * flip_x_mult;
             float c_local_y = c->y * flip_y_mult;
+#if defined(__PSP__) || defined(__PS2__)
+            float cex = 1.f, cey = 1.f, crot = c->rot;
+            if (c->color_type == COLOR_TYPE_GLOW && !settingsState.glowEnabled) continue;
+            if (sa) {
+                AnimPose p;
+                skel_pose(sa, i + 1, at, &p);
+                c_local_x = p.x * flip_x_mult;
+                c_local_y = p.y * flip_y_mult;
+                cex = p.sx;
+                cey = p.sy;
+                crot = turned ? -p.rot : p.rot;
+            }
+#endif
 
             float c_rot_x = c_local_x * m00 + c_local_y * m01;
             float c_rot_y = c_local_x * m10 + c_local_y * m11;
@@ -637,11 +858,27 @@ void spawn_object_at(
             int c_flip_x_mult = (c->flip_x ? -1 : 1);
             int c_flip_y_mult = (c->flip_y ? -1 : 1);
 
-            vo->spr = sprite_templates[id].child_templates[i]; 
+            vo->spr = sprite_templates[id].child_templates[i];
 
             float pulse_scale = get_object_pulse(amplitude, id, i + 2);
 
             C2D_SpriteSetPos(&vo->spr, c_x, c_y);
+#if defined(__PSP__) || defined(__PS2__)
+            if (fa) {
+                float fs;
+                bool ff;
+                if (frame_sprite(fa, i + 1, at, &vo->spr, &fs, &ff)) {
+                    cex = ff ? -fs : fs;
+                    cey = fs;
+                }
+                C2D_SpriteSetPos(&vo->spr, c_x, c_y);
+            }
+            if (fa || sa) {
+                C2D_SpriteSetScale(&vo->spr, c->scale_x * c_flip_x_mult * sx * pulse_scale * cex,
+                                          c->scale_y * c_flip_y_mult * sy * pulse_scale * cey);
+                C2D_SpriteSetRotation(&vo->spr, C3D_AngleFromDegrees(crot) + rad);
+            } else
+#endif
             if (id < 15 || id > 17) {
                 C2D_SpriteSetScale(&vo->spr, c->scale_x * c_flip_x_mult * sx * pulse_scale,
                                           c->scale_y * c_flip_y_mult * sy * pulse_scale);
@@ -656,6 +893,10 @@ void spawn_object_at(
             vo->col_type = c->color_type;
             vo->opacity = c->opacity;
             vo->col_channel = get_color_channel(c->color_type, obj_game, obj);
+#if defined(__PSP__) || defined(__PS2__)
+            // a glow detail (the monsters'): the background's light color, as wiidash
+            if (c->color_type == COLOR_TYPE_GLOW) vo->col_channel = CHANNEL_LBG_NOLERP;
+#endif
             viewable_objects_ptr[sprite_count] = vo;
             sprite_count++;
         }
@@ -735,6 +976,15 @@ void sort_viewable_objects(SpriteObject **objects, int count) {
         buf_a[i].obj = objects[i];
         buf_a[i].key = make_sort_key(objects[i]);
     }
+
+#if defined(__PS2__) && defined(GDPS2_EXPERIMENTAL_SMALL_SORT)
+    if (count <= INSERTION_SORT_THRESHOLD) {
+        gd_stable_sort_small(buf_a, count);
+        for (int i = 0; i < count; ++i)
+            objects[i] = buf_a[i].obj;
+        return;
+    }
+#endif
 
     SortItem *src = buf_a;
     SortItem *dst = buf_b;
@@ -1169,6 +1419,7 @@ void draw_attempt_text() {
 float object_creating_time = 0;
 float object_sorting_time = 0;
 float object_drawing_time = 0;
+float player_graphics_time = 0; // the part of object_drawing_time spent in draw_player_graphics
 
 
 void create_objects() {
@@ -1207,7 +1458,13 @@ void create_objects() {
                 
                 float calc_x = (objects.x[obj] - state.camera_x);
                 float calc_y = SCREEN_HEIGHT - ((objects.y[obj] - state.camera_y));  
+#ifdef __PS2__
+                // the 4:3 TV shows only the logical x range [CROP_X, CROP_X + VISIBLE_W]
+                if (calc_x < GDPS2_CROP_X / SCALE - 60 ||
+                    calc_x >= (GDPS2_CROP_X + GDPS2_VISIBLE_W) / SCALE + 60) continue;
+#else
                 if (calc_x < -60 || calc_x >= (SCREEN_WIDTH / SCALE) + 60) continue;
+#endif
                 if (calc_y < -60 || calc_y >= (SCREEN_HEIGHT / SCALE) + 60) continue;
 
                 // Skip invalid objects
@@ -1240,7 +1497,11 @@ void create_objects() {
                     objects.rotation[obj],
                     objects.flippedH[obj] ^ (state.mirror_mult < 0),
                     objects.flippedV[obj],
+#if defined(__PSP__) || defined(__PS2__)
+                    fade_scale * OBJ_SCALE(obj)
+#else
                     fade_scale
+#endif
                 );
 
                 spawn_object_particles(obj);
@@ -1303,14 +1564,34 @@ void create_objects() {
                     col.color.b = CLAMP(b, 0, 255);
                     col.blending = true;
                 }
+#if defined(__PSP__) || defined(__PS2__)
+            } else if (col_channel == CHANNEL_V2_LIGHTER) {
+                // 2.0's "lighter": the object's main color, halfway to white
+                int obj_id = objects.id[obj->obj];
+                int base = get_color_channel(COLOR_TYPE_BASE, obj->obj, &game_objects[obj_id]);
+                Color c = { 255, 255, 255 };
+                if (base == 0) c = (Color){ 0, 0, 0 };
+                else if (base > 0 && base != CHANNEL_V2_LIGHTER) c = channels[get_col_channel_index(base)].color;
+                col.color.r = (c.r + 255) / 2;
+                col.color.g = (c.g + 255) / 2;
+                col.color.b = (c.b + 255) / 2;
+                col.blending = false;
+#endif
             } else {
                 col = channels[get_col_channel_index(col_channel)];
             }
-            
+
             int game_object = obj->obj;
             float x = ((objects.x[game_object] - state.camera_x));
-            
+
             float opacity = obj->opacity;
+#if defined(__PSP__) || defined(__PS2__)
+            // the channel's own opacity (2.0)
+            if (col_channel > 0 && col_channel != CHANNEL_INVISIBLE_GLOW && col_channel != CHANNEL_V2_LIGHTER)
+                opacity *= channels[get_col_channel_index(col_channel)].alpha * (1.f / 255.f);
+            // its groups' alpha and pulses (2.0 triggers)
+            trig2_object_color(game_object, obj->col_type, &col.color, &opacity);
+#endif
 
             // Handle invisible object opacity
             if (object_fades(game_object)) {
@@ -1323,6 +1604,10 @@ void create_objects() {
             }
 
             int real_opacity = get_obj_opacity(game_object, x) * opacity;
+#ifdef __PSP__
+            // the objects' glow, added over the screen, was much stronger than GD's
+            if (obj->layer == 1) real_opacity = real_opacity * 3 / 5;
+#endif
 
             // Set opacity here
             if (obj->layer == 0) objects.opacity[game_object] = real_opacity / 255.f;
@@ -1416,10 +1701,21 @@ void draw_objects() {
 
             // Cull invisible objects
             if ((col.color.r | col.color.g | col.color.b) == 0 && col.blending) continue;
-            
+#if defined(__PSP__) || defined(__PS2__)
+            // and fully faded ones (alpha triggers, the fade-in at the edges):
+            // nothing to see, but each one costs its vertices
+            if ((obj->tint.corners[0].color >> 24) == 0) continue;
+#endif
+
             C2D_DrawSpriteTinted(&obj->spr, &obj->tint);
-        } else {   
+        } else {
+#if defined(__PSP__) || defined(__PS2__)
+            // the texts at the player's layer: over what is behind it
+            draw_text_objects();
+#endif
+            u64 player_start = svcGetSystemTick();
             draw_player_graphics();
+            player_graphics_time = (svcGetSystemTick() - player_start) / CPU_TICKS_PER_MSEC;
         }
     }
 
@@ -1639,6 +1935,209 @@ void spawn_icon_at(
         }
     }
 }
+
+#if defined(__PSP__) || defined(__PS2__)
+// GD 2.0's objects (and the robot), made from the player's own copy of GD:
+// in memory only while a level that has them is (512 KB on a PSP-1000).
+// Without the sheet those objects just don't show
+void v2_sheet_need(bool need) {
+    robots_sheet_need(need);
+    if (need == (spriteSheetV2 != NULL)) return;
+    if (need) {
+        spriteSheetV2 = C2D_SpriteSheetLoad("romfs:/gfx/sprites_v2.t3x");
+    } else {
+        C2D_SpriteSheetFree(spriteSheetV2);
+        spriteSheetV2 = NULL;
+    }
+    // the objects' sprites point into it
+    free_cached_sprites();
+    cache_all_sprites();
+}
+
+typedef struct {
+    int obj;
+    float scale_x, scale_y;
+    char *text;
+} TextObject;
+
+static TextObject *text_objs;
+static int text_obj_count, text_obj_cap;
+
+void text_objects_clear(void) {
+    for (int i = 0; i < text_obj_count; i++) free(text_objs[i].text);
+    free(text_objs);
+    text_objs = NULL;
+    text_obj_count = text_obj_cap = 0;
+}
+
+void text_object_add(int obj, const char *b64, float scale_x, float scale_y) {
+    // GD's base64 is the URL one, and may come without its padding
+    size_t n = strlen(b64);
+    char *in = malloc(n + 4);
+    unsigned char *out = malloc(n + 4);
+    if (!in || !out) {
+        free(in);
+        free(out);
+        return;
+    }
+    memcpy(in, b64, n + 1);
+    while (n % 4) in[n++] = '=';
+    in[n] = 0;
+    fix_base64_url(in);
+    int len = base64_decode(in, out);
+    free(in);
+    if (len <= 0) {
+        free(out);
+        return;
+    }
+    out[len] = 0;
+
+    if (text_obj_count == text_obj_cap) {
+        int cap = text_obj_cap ? text_obj_cap * 2 : 16;
+        TextObject *grown = realloc(text_objs, cap * sizeof(TextObject));
+        if (!grown) {
+            free(out);
+            return;
+        }
+        text_objs = grown;
+        text_obj_cap = cap;
+    }
+    text_objs[text_obj_count++] = (TextObject){ obj, scale_x > 0 ? scale_x : 1.f, scale_y > 0 ? scale_y : 1.f, (char *)out };
+}
+
+// in bigFont, like the attempts' text, in their channel (white if none), with
+// their groups' alpha and moves and the fade at the screen's edges
+void draw_text_objects(void) {
+    for (int i = 0; i < text_obj_count; i++) {
+        int obj = text_objs[i].obj;
+        if (objects.toggled[obj]) continue;
+
+        float calc_x = objects.x[obj] - state.camera_x;
+        float calc_y = SCREEN_HEIGHT - (objects.y[obj] - state.camera_y);
+        // (wider than an object: a text is long)
+        if (calc_x < -300 || calc_x >= (SCREEN_WIDTH / SCALE) + 300) continue;
+        if (calc_y < -100 || calc_y >= (SCREEN_HEIGHT / SCALE) + 100) continue;
+
+        int ch = objects.col_channel[obj] ? v2_channel(objects.col_channel[obj]) : CHANNEL_V2_WHITE;
+        ColorChannel col = channels[get_col_channel_index(ch)];
+        float opacity = col.alpha * (1.f / 255.f);
+        trig2_object_color(obj, COLOR_TYPE_BASE, &col.color, &opacity);
+        int alpha = get_obj_opacity(obj, calc_x) * opacity;
+        if (alpha <= 0) continue;
+
+        change_blending(col.blending);
+        draw_text_tint = C2D_Color32(col.color.r, col.color.g, col.color.b, alpha);
+        // turned about its center, as GD's objects (clockwise)
+        C3D_Mtx view;
+        C2D_ViewSave(&view);
+        C2D_ViewTranslate(get_mirror_x(calc_x, state.mirror_factor), calc_y);
+        if (objects.rotation[obj] != 0) C2D_ViewRotateDegrees(objects.rotation[obj]);
+        draw_text(&bigFont_fontCharset, &bigFont_sheet, 0, 0,
+                  text_objs[i].scale_x, text_objs[i].scale_y, 0.5f, false, "%s", text_objs[i].text);
+        C2D_ViewRestore(&view);
+    }
+    draw_text_tint = C2D_Color32(255, 255, 255, 255);
+    change_blending(false);
+}
+
+static C2D_SpriteSheet robotSheet;
+
+void robots_sheet_need(bool need) {
+    if (need == (robotSheet != NULL)) return;
+    if (need) {
+        robotSheet = C2D_SpriteSheetLoad("romfs:/gfx/robots.t3x");
+    } else {
+        C2D_SpriteSheetFree(robotSheet);
+        robotSheet = NULL;
+    }
+}
+
+// robots.psheet (psp/tools/mkrobots.py): 12 sprites a robot, 3 a part (main
+// color, second color, uncolored extra). The poses' parts are these (the
+// order of robot_part_tex in objects_v2_anim.inc)
+#define ROBOT_SHEET_SPRITES 12
+static const unsigned char robot_slot_part[ROBOT_PARTS] = { 3, 2, 4, 1, 3, 2, 4 };
+
+void spawn_robot_at(float x, float y, float deg, unsigned char flip_x, unsigned char flip_y,
+                    float scale, u32 p1_color, u32 p2_color, u8 *anim, float t) {
+    spawn_robot_id_at(selected_robot, x, y, deg, flip_x, flip_y, scale, p1_color, p2_color, anim, t);
+}
+
+// the robot posed: its parts' second color, the main one over it and the
+// extra over both
+void spawn_robot_id_at(int id, float x, float y, float deg, unsigned char flip_x, unsigned char flip_y,
+                       float scale, u32 p1_color, u32 p2_color, u8 *anim, float t) {
+    // without the robots' sheet, the first one (from the 2.0 objects' sheet)
+    bool own = robotSheet && id >= 1 && id <= ROBOT_COUNT;
+    if (!own && !spriteSheetV2) return;
+
+    // as wiidash: 30 frames a second; a start goes on to its loop two frames
+    // before its end
+    int a = *anim < sizeof(robot_anims) / sizeof(robot_anims[0]) ? *anim : ROBOT_ANIM_RUN;
+    float ft = t * 30.f;
+    int f = (int)ft % robot_anims[a].frames;
+    if (f == robot_anims[a].frames - 2 && (a == ROBOT_ANIM_JUMP_START || a == ROBOT_ANIM_FALL_START)) {
+        *anim = a + 1;
+    }
+    int g = (f + 1) % robot_anims[a].frames;
+    float k = ft - (int)ft;
+
+    float rad = C3D_AngleFromDegrees(deg);
+    float cos_r, sin_r;
+#ifdef __PSP__
+    psp_sincosf(rad, &sin_r, &cos_r);
+#else
+    cos_r = cosf(rad);
+    sin_r = sinf(rad);
+#endif
+    int fx = flip_x ? -1 : 1;
+    int fy = flip_y ? -1 : 1;
+    bool turned = (fx * fy) < 0;
+    u32 colors[2] = { p1_color, p2_color };
+
+    for (int i = 0; i < ROBOT_PARTS; i++) {
+        const AnimPose *p = &robot_anims[a].poses[f * ROBOT_PARTS + i];
+        const AnimPose *q = &robot_anims[a].poses[g * ROBOT_PARTS + i];
+        float px = (p->x + (q->x - p->x) * k) * fx;
+        float py = (p->y + (q->y - p->y) * k) * fy;
+        float psx = p->sx + (q->sx - p->sx) * k;
+        float psy = p->sy + (q->sy - p->sy) * k;
+        float d = q->rot - p->rot;
+        if (d > 180.f) d -= 360.f;
+        if (d < -180.f) d += 360.f;
+        float prot = p->rot + d * k;
+
+        // y up in the plist, down on screen; turned like the whole robot
+        float sx_ = x + (px * cos_r + py * sin_r) * scale;
+        float sy_ = y + (px * sin_r - py * cos_r) * scale;
+
+        // the second color under the main one (a ghost copy: p2_color 0, only the main)
+        int first = p2_color ? 1 : 0, last = (own && p2_color) ? -1 : 0;
+        for (int layer = first; layer >= last; layer--) {
+            int rel;
+            C2D_SpriteSheet *sheet;
+            if (own) {
+                // the extra (layer -1 here, 2 in the sheet), last and uncolored
+                int sheet_layer = layer < 0 ? 2 : layer;
+                rel = (id - 1) * ROBOT_SHEET_SPRITES + (robot_slot_part[i] - 1) * 3 + sheet_layer;
+                sheet = &robotSheet;
+            } else {
+                sheet = get_sprite_sheet(robot_part_tex[i][layer], &rel);
+            }
+            C2D_Sprite spr = { 0 };
+            C2D_ImageTint tint;
+            C2D_SpriteFromSheet(&spr, *sheet, rel);
+            C2D_SpriteSetCenter(&spr, 0.5f, 0.5f);
+            C3D_TexSetFilter(spr.image.tex, GPU_LINEAR, GPU_LINEAR);
+            C2D_SpriteSetPos(&spr, sx_, sy_);
+            C2D_SpriteSetScale(&spr, scale * psx * fx, scale * psy * fy);
+            C2D_SpriteSetRotation(&spr, rad + C3D_AngleFromDegrees(turned ? -prot : prot));
+            C2D_PlainImageTint(&tint, layer < 0 ? (0x00FFFFFF | (p1_color & 0xFF000000)) : colors[layer], 1.0f);
+            C2D_DrawSpriteTinted(&spr, &tint);
+        }
+    }
+}
+#endif
 
 void spawn_p1_layer_at(
     int gamemode,
